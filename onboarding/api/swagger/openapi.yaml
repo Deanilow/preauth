@@ -1,0 +1,496 @@
+openapi: 3.0.3
+
+info:
+  title: Onboarding Orchestrator
+  description: |
+    Orquesta las 5 fases del flujo de onboarding, posteriores al `/pre-auth/context-init`
+    del Preauth Orchestrator. No tiene base de datos propia: delega el estado de la
+    sesión a Session Service (Redis) y la emisión/verificación de JWTs a Token Service.
+
+    **Flujo completo**:
+    ```
+    /pre-auth/context-init  → contextToken + sessionHandle          (Preauth Orchestrator)
+    /onboarding/start        → sessionToken                          (requiere contextToken)
+    /onboarding/ocr          → step: face_pending                    (requiere sessionToken)
+    /onboarding/face         → step: otp_pending                     (requiere sessionToken)
+    /onboarding/otp          → step: password_pending                (requiere sessionToken)
+    /onboarding/products     → step: password_creation                (requiere sessionToken)
+    /onboarding/password     → step: completed                       (requiere sessionToken)
+    ```
+
+    **Seguridad por paso**:
+    - `/onboarding/start`: requiere `Authorization: Bearer <contextToken>` (aud=preauth-api,
+      scope=preauth:onboarding.start). El `jti` del contextToken se consume una única vez contra Redis
+      (anti-replay). El `sessionHandle` debe enviarse en el body (el contextToken no lo incluye).
+    - Los 4 pasos restantes: requieren `Authorization: Bearer <sessionToken>` (aud=onboarding-service,
+      scope=onboarding.active, sub=`session:{sessionHandle}`) **y** un header `X-Request-Id` único
+      por intento (anti-replay por request, no solo por token — el sessionToken es multi-uso
+      durante los 900s de vida de la sesión).
+    - Todas las verificaciones de JWT son contra el JWKS remoto de Token Service (RS256), nunca
+      `jwt.decode()` sin validar firma.
+    - Se valida binding de IP y de canal (`channel`) entre lo emitido en el token y el request actual.
+
+    **DNI y `sub`**: en `/onboarding/start` se recibe el DNI del cliente. Se genera un `sub`
+    aleatorio (GUID, no derivado del DNI) que identifica al usuario dentro de la sesión, y se
+    persiste en Session Service (Redis), indexado también por `sub` para lookup directo
+    entre servicios sin pasar por HTTP.
+  version: 1.0.0
+  contact:
+    name: Arquitectura Surgir
+
+servers:
+  - url: https://api.surgir.com
+    description: Producción (expuesto via API Gateway)
+  - url: http://localhost:8021
+    description: Desarrollo local
+
+tags:
+  - name: onboarding
+    description: Endpoints del flujo de onboarding (fases 2 a 6)
+
+paths:
+
+  # ─── Start ─────────────────────────────────────────────────────────────────
+  /onboarding/start:
+    post:
+      summary: Iniciar el flujo de onboarding (fase 2)
+      description: |
+        Canjea el `contextToken` emitido por Preauth Orchestrator, valida el DNI recibido,
+        deriva el `sub` del cliente y avanza la sesión a `ocr_pending`, emitiendo el
+        `sessionToken` que se usará en los pasos siguientes. El OTP se genera más adelante,
+        en la transición `face_pending → otp_pending`.
+
+        **Errores de negocio relevantes**: `MISSING_AUTH_TOKEN`, `INVALID_TOKEN`, `TOKEN_REPLAY`
+        (contextToken ya canjeado), `CHANNEL_MISMATCH`, `IP_BINDING_MISMATCH`, `INVALID_DNI`,
+        `INVALID_STEP_SEQUENCE` (la sesión ya avanzó de `context_issued`), `SESSION_NOT_FOUND`.
+      operationId: start
+      tags: [onboarding]
+      security:
+        - contextToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartRequest'
+      responses:
+        '200':
+          description: sessionToken emitido, la sesión avanzó a ocr_pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ─── OTP ───────────────────────────────────────────────────────────────────
+  /onboarding/otp:
+    post:
+      summary: Verificar el OTP (fase 5)
+      description: |
+        Valida el `otpCode` contra Session Service (`POST /sessions/{handle}/verify-otp`),
+        que compara el código y su expiración server-side — el OTP nunca se expone en
+        ninguna respuesta HTTP. Avanza la sesión a `password_pending`.
+      operationId: verifyOtp
+      tags: [onboarding]
+      security:
+        - sessionToken: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOtpRequest'
+      responses:
+        '200':
+          description: OTP válido, la sesión avanzó a password_pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepAdvancedResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ─── Face ──────────────────────────────────────────────────────────────────
+  /onboarding/face:
+    post:
+      summary: Verificar biometría facial (fase 4)
+      description: |
+        Verifica el `faceToken` provisto por el proveedor biométrico del cliente
+        (simulado en esta versión — no hay integración real de biometría solicitada).
+        Genera el código OTP (nunca devuelto en la respuesta) y avanza la sesión a
+        `otp_pending`.
+      operationId: verifyFace
+      tags: [onboarding]
+      security:
+        - sessionToken: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyFaceRequest'
+      responses:
+        '200':
+          description: Biometría válida, la sesión avanzó a otp_pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepAdvancedResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ─── OCR ───────────────────────────────────────────────────────────────────
+  /onboarding/ocr:
+    post:
+      summary: Verificar documento (OCR) (fase 3)
+      description: |
+        Verifica el `ocrToken` provisto por el proveedor de OCR del cliente
+        (simulado en esta versión — no hay integración real de OCR solicitada).
+        Avanza la sesión a `face_pending`.
+      operationId: verifyOcr
+      tags: [onboarding]
+      security:
+        - sessionToken: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOcrRequest'
+      responses:
+        '200':
+          description: Documento válido, la sesión avanzó a face_pending.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepAdvancedResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ─── Products ──────────────────────────────────────────────────────────────
+  /onboarding/products:
+    post:
+      summary: Seleccionar productos (fase 5)
+      description: Registra los productos seleccionados. Avanza la sesión a `password_creation`.
+      operationId: selectProducts
+      tags: [onboarding]
+      security:
+        - sessionToken: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelectProductsRequest'
+      responses:
+        '200':
+          description: Productos registrados, la sesión avanzó a password_creation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepAdvancedResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ─── Password ──────────────────────────────────────────────────────────────
+  /onboarding/password:
+    post:
+      summary: Crear contraseña y completar onboarding (fase 6)
+      description: |
+        Valida la fortaleza de la contraseña y ejecuta el enrolamiento del dispositivo
+        (`Device Enrollment Service`, externo a este workspace). Solo avanza la sesión a
+        `completed` si el enrolamiento fue exitoso; de lo contrario retorna
+        `DEVICE_ENROLLMENT_FAILED` (502) y la sesión permanece en `password_creation`.
+      operationId: createPassword
+      tags: [onboarding]
+      security:
+        - sessionToken: []
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePasswordRequest'
+      responses:
+        '200':
+          description: Onboarding completado.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepAdvancedResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  # ─── Health ──────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      tags: [onboarding]
+      responses:
+        '200':
+          description: Servicio operativo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: onboarding-orchestrator
+
+# ─── Components ───────────────────────────────────────────────────────────────
+components:
+
+  securitySchemes:
+    contextToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT RS256 emitido por Token Service (aud=preauth-api, scope=preauth:onboarding.start, TTL 120s, single-use).
+    sessionToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT RS256 emitido por Token Service (aud=onboarding-service, scope=onboarding.active, TTL 900s, multi-uso).
+
+  parameters:
+    XRequestId:
+      name: X-Request-Id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: |
+        Identificador único por intento de request. Se consume una única vez contra Redis
+        (`req:{sessionHandle}:{requestId}`) — reintentar con el mismo valor devuelve 409
+        (REQUEST_REPLAYED). El sessionToken es multi-uso; este header es lo que previene el replay
+        de un mismo paso.
+
+  schemas:
+
+    StartRequest:
+      type: object
+      required: [sessionHandle, dni]
+      properties:
+        sessionHandle:
+          type: string
+          description: Emitido por Preauth Orchestrator en /pre-auth/context-init. El contextToken no lo incluye.
+        dni:
+          type: string
+          pattern: '^[0-9]+$'
+          description: Documento de identidad del cliente. Se usa para derivar el `sub`.
+
+    StartResponse:
+      type: object
+      required: [sessionToken, step, expiresIn]
+      properties:
+        sessionToken:
+          type: string
+          description: JWT firmado RS256. TTL 900s. Multi-uso durante el resto del flujo.
+        step:
+          $ref: '#/components/schemas/OnboardingStep'
+        expiresIn:
+          type: integer
+          example: 900
+
+    VerifyOtpRequest:
+      type: object
+      required: [sessionHandle, otpCode]
+      properties:
+        sessionHandle:
+          type: string
+        otpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+
+    VerifyFaceRequest:
+      type: object
+      required: [sessionHandle, faceToken]
+      properties:
+        sessionHandle:
+          type: string
+        faceToken:
+          type: string
+
+    VerifyOcrRequest:
+      type: object
+      required: [sessionHandle, ocrToken]
+      properties:
+        sessionHandle:
+          type: string
+        ocrToken:
+          type: string
+
+    SelectProductsRequest:
+      type: object
+      required: [sessionHandle, productIds]
+      properties:
+        sessionHandle:
+          type: string
+        productIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+
+    CreatePasswordRequest:
+      type: object
+      required: [sessionHandle, password]
+      properties:
+        sessionHandle:
+          type: string
+        password:
+          type: string
+          minLength: 8
+
+    StepAdvancedResponse:
+      type: object
+      required: [step]
+      properties:
+        step:
+          $ref: '#/components/schemas/OnboardingStep'
+
+    OnboardingStep:
+      type: string
+      enum:
+        - context_issued
+        - ocr_pending
+        - face_pending
+        - otp_pending
+        - password_pending
+        - password_creation
+        - completed
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, level]
+          properties:
+            code:
+              type: string
+              enum:
+                - MISSING_AUTH_TOKEN
+                - INVALID_TOKEN
+                - TOKEN_REPLAY
+                - REQUEST_REPLAYED
+                - CHANNEL_MISMATCH
+                - IP_BINDING_MISMATCH
+                - MISSING_REQUEST_ID
+                - INVALID_STEP_SEQUENCE
+                - STEP_EXPIRED
+                - SESSION_NOT_FOUND
+                - INVALID_DNI
+                - INVALID_OTP
+                - FACE_VALIDATION_FAILED
+                - INVALID_PRODUCTS_SELECTION
+                - INVALID_PASSWORD
+                - DEVICE_ENROLLMENT_FAILED
+            message:
+              type: string
+            level:
+              type: string
+              enum: [error, warning, info]
+            description:
+              type: string
+
+  responses:
+    BadRequest:
+      description: Body inválido (falla de JSON Schema).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: Token ausente, inválido, expirado, con audiencia incorrecta, o ya usado (replay).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Forbidden:
+      description: Canal o IP del request no coincide con el binding del token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: La sesión no existe (expiró o el handle es inválido).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: Secuencia de pasos inválida o X-Request-Id ya usado.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Gone:
+      description: El paso actual expiró (TTL del step vencido o techo absoluto de 900s de la sesión).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    UnprocessableEntity:
+      description: Validación de negocio fallida (DNI, OTP, biometría, productos o password inválidos).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    BadGateway:
+      description: Un servicio dependiente (Token/Session/Device Enrollment) no respondió o falló.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InternalError:
+      description: Error interno no clasificado.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }

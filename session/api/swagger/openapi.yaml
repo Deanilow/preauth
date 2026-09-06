@@ -1,0 +1,496 @@
+openapi: 3.0.3
+
+info:
+  title: Session Service
+  description: |
+    Gestiona el estado de la sesión de onboarding en Redis (real, no in-memory)
+    mediante una state machine. Cada sesión avanza por pasos definidos:
+    `context_issued` → `ocr_pending` → `face_pending` → `otp_pending` →
+    `password_pending` → `completed`.
+
+    El estado se almacena en Redis con TTL diferente por paso, con un techo
+    absoluto de **900 segundos** (15 minutos) desde la creación de la sesión:
+    ningún avance puede extender la vida del flujo más allá de esa ventana.
+
+    El DNI capturado en `/onboarding/start` (Fase 2) se persiste en el registro
+    de la sesión junto con `userSub` (GUID aleatorio generado para esa sesión,
+    no derivado del DNI). `userSub` también se indexa como clave secundaria
+    `sub:{userSub}` en Redis para que otros servicios puedan consultarlo
+    directamente contra Redis, sin pasar por la API HTTP de este servicio.
+
+    **Seguridad**: Todos los endpoints requieren autenticación service-to-service
+    via API Key. El sessionHandle es un UUID opaco sin información deducible.
+    El DNI y el OTP nunca se devuelven en las respuestas HTTP de este servicio.
+  version: 1.0.0
+  contact:
+    name: Arquitectura Surgir
+
+servers:
+  - url: http://session-service:4003
+    description: Internal service (no expuesto al internet)
+
+tags:
+  - name: sessions
+    description: Gestión del estado de sesiones de onboarding
+
+paths:
+  # ─── Create Session ───────────────────────────────────────────────────────────
+  /sessions:
+    post:
+      summary: Crear sesión de onboarding
+      description: |
+        Crea una nueva sesión en Redis con estado inicial `context_issued`.
+
+        **Estado inicial**: `context_issued`
+        **TTL inicial**: 120 segundos (el usuario tiene 2 minutos para llamar a /onboarding/start)
+        **Techo absoluto**: 900 segundos (15 minutos) desde la creación, sin importar cuántos pasos avance.
+
+        **Estructura almacenada en Redis** (`flow:{sessionHandle}`):
+        ```json
+        {
+          "step": "context_issued",
+          "channel": "web",
+          "ipHash": "sha256:7f8a...",
+          "fingerprint": "a3f5...",
+          "correlationId": "550e8400-...",
+          "completedSteps": [],
+          "createdAt": "2026-08-18T14:23:00Z",
+          "stepExpiry": "2026-08-18T14:25:00Z",
+          "absoluteExpiresAt": "2026-08-18T14:38:00Z"
+        }
+        ```
+      operationId: createSession
+      tags: [sessions]
+      security:
+        - ServiceApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+            example:
+              channel: web
+              clientIp: 181.50.10.25
+              fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
+              correlationId: 550e8400-e29b-41d4-a716-446655440000
+      responses:
+        "201":
+          description: Sesión creada correctamente
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateSessionResponse"
+              example:
+                sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+                step: context_issued
+                expiresIn: 120
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ─── Get Session ──────────────────────────────────────────────────────────────
+  /sessions/{sessionHandle}:
+    get:
+      summary: Obtener estado de una sesión
+      description: |
+        Recupera el estado actual de la sesión desde Redis.
+        Si el TTL de Redis venció, devuelve 404 (la sesión expiró).
+      operationId: getSession
+      tags: [sessions]
+      security:
+        - ServiceApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/SessionHandle"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Estado de la sesión
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionState"
+              example:
+                sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+                step: otp_pending
+                channel: web
+                completedSteps: [context_issued]
+                createdAt: "2026-08-18T14:23:00Z"
+                stepExpiry: "2026-08-18T14:26:00Z"
+        "404":
+          $ref: "#/components/responses/SessionNotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ─── Advance Step ─────────────────────────────────────────────────────────────
+  /sessions/{sessionHandle}/advance:
+    put:
+      summary: Avanzar al siguiente paso de la state machine
+      description: |
+        Mueve la sesión al siguiente paso y actualiza el TTL en Redis. El TTL
+        efectivo nunca supera lo que resta del techo absoluto de 900s desde la
+        creación de la sesión (`absoluteExpiresAt`).
+
+        **Transiciones válidas** (no se puede saltar ni retroceder):
+
+        | Paso actual | Siguiente paso | Nuevo TTL |
+        |---|---|---|
+        | `context_issued` | `ocr_pending` | 120s |
+        | `ocr_pending` | `face_pending` | 120s |
+        | `face_pending` | `otp_pending` | 120s |
+        | `otp_pending` | `password_pending` | 120s |
+        | `password_pending` | `completed` | 120s |
+
+        **Metadata por paso**: en `context_issued → ocr_pending` (Fase 2,
+        `/onboarding/start`) se debe enviar `metadata.dni` y `metadata.userSub`
+        para persistirlos en el registro de Redis. `userSub` además se indexa
+        como `sub:{userSub}` para consulta directa desde otros servicios. El
+        código OTP (`metadata.otpCode`/`otpExpiresAt`) se envía recién en la
+        transición `face_pending → otp_pending`, ya que ese paso quedó después
+        de la validación biométrica en el nuevo orden.
+
+        Si el paso solicitado no coincide con el paso actual → `409 Conflict`.
+        Si la sesión no existe → `404 Not Found`.
+        Si se superó el techo absoluto de 900s → `410 Gone`.
+      operationId: advanceStep
+      tags: [sessions]
+      security:
+        - ServiceApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/SessionHandle"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdvanceStepRequest"
+            example:
+              fromStep: context_issued
+              toStep: ocr_pending
+              metadata:
+                dni: "87654321"
+                userSub: 9c858901-8a57-4791-81fe-4c455b099bc9
+      responses:
+        "200":
+          description: Sesión avanzada correctamente
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionState"
+              example:
+                sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+                step: ocr_pending
+                channel: web
+                completedSteps: [context_issued]
+                createdAt: "2026-08-18T14:23:00Z"
+                stepExpiry: "2026-08-18T14:26:00Z"
+        "404":
+          $ref: "#/components/responses/SessionNotFound"
+        "409":
+          description: El paso actual no coincide con `fromStep` (state machine violation)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: step_mismatch
+                message: "Session is at step 'face_pending', cannot advance from 'context_issued'"
+        "410":
+          description: Se superó el techo absoluto de 900s desde la creación de la sesión
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: session_expired
+                message: Session exceeded the absolute 900s TTL
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ─── Verify OTP ───────────────────────────────────────────────────────────────
+  /sessions/{sessionHandle}/verify-otp:
+    post:
+      summary: Validar el OTP de la sesión
+      description: |
+        Compara el `otpCode` recibido contra el valor almacenado en Redis
+        (`otpCode` + `otpExpiresAt` del registro). El OTP nunca se expone en
+        `GET /sessions/{sessionHandle}` — solo este endpoint puede validarlo,
+        para que el secreto nunca salga del límite de Redis/Session Service.
+      operationId: verifySessionOtp
+      tags: [sessions]
+      security:
+        - ServiceApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/SessionHandle"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [otpCode]
+              properties:
+                otpCode:
+                  type: string
+                  minLength: 4
+                  maxLength: 8
+            example:
+              otpCode: "482913"
+      responses:
+        "200":
+          description: Resultado de la validación (200 tanto si es válido como si no)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+              example:
+                valid: true
+        "404":
+          $ref: "#/components/responses/SessionNotFound"
+        "409":
+          description: La sesión no está en el paso `otp_pending`
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ─── Invalidate Session ───────────────────────────────────────────────────────
+  /sessions/{sessionHandle}/invalidate:
+    delete:
+      summary: Invalidar una sesión
+      description: |
+        Elimina la sesión de Redis inmediatamente.
+        Usado en casos de: logout, detección de fraude, error irrecuperable.
+        Si la sesión no existe (ya expiró), devuelve 204 igualmente (idempotente).
+      operationId: invalidateSession
+      tags: [sessions]
+      security:
+        - ServiceApiKey: []
+      parameters:
+        - $ref: "#/components/parameters/SessionHandle"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "204":
+          description: Sesión invalidada (o ya no existía)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      tags: [sessions]
+      responses:
+        "200":
+          description: Servicio operativo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: session-service
+
+# ─── Components ───────────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    ServiceApiKey:
+      type: http
+      scheme: bearer
+      description: API Key de autenticación service-to-service desde Secret Manager.
+
+  parameters:
+    SessionHandle:
+      name: sessionHandle
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Identificador opaco de la sesión (UUID generado por el Session Service)
+    CorrelationId:
+      name: x-correlation-id
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: ID de correlación generado por el API Gateway para trazabilidad
+
+  schemas:
+    OnboardingStep:
+      type: string
+      enum:
+        - context_issued
+        - ocr_pending
+        - face_pending
+        - otp_pending
+        - password_pending
+        - password_creation
+        - completed
+      description: |
+        Pasos de la state machine de onboarding.
+        El orden es estricto y no se puede saltar ni retroceder.
+
+    CreateSessionRequest:
+      type: object
+      required: [channel, clientIp, fingerprint, correlationId]
+      properties:
+        channel:
+          type: string
+          enum: [web, app]
+        clientIp:
+          type: string
+          format: ipv4
+          description: Almacenada como hash SHA256, nunca en texto plano
+        fingerprint:
+          type: string
+          minLength: 32
+          maxLength: 128
+        correlationId:
+          type: string
+          format: uuid
+
+    CreateSessionResponse:
+      type: object
+      required: [sessionHandle, step, expiresIn]
+      properties:
+        sessionHandle:
+          type: string
+          format: uuid
+          description: Identificador opaco de la sesión. El cliente lo recibirá del Orchestrator.
+        step:
+          $ref: "#/components/schemas/OnboardingStep"
+        expiresIn:
+          type: integer
+          description: Segundos hasta la expiración del paso actual en Redis
+
+    SessionState:
+      type: object
+      required:
+        [sessionHandle, step, channel, completedSteps, createdAt, stepExpiry]
+      properties:
+        sessionHandle:
+          type: string
+          format: uuid
+        step:
+          $ref: "#/components/schemas/OnboardingStep"
+        channel:
+          type: string
+          enum: [web, app]
+        completedSteps:
+          type: array
+          items:
+            $ref: "#/components/schemas/OnboardingStep"
+          description: Pasos ya completados. Útil para validar orden y no re-procesar.
+        createdAt:
+          type: string
+          format: date-time
+        stepExpiry:
+          type: string
+          format: date-time
+          description: Cuándo expira el paso actual en Redis
+        userSub:
+          type: string
+          format: uuid
+          description: GUID aleatorio generado en /onboarding/start (no derivado del DNI), presente una vez capturado. Nunca se expone el DNI en texto plano.
+        fingerprint:
+          type: string
+          description: Hash del fingerprint del dispositivo capturado en la creación de la sesión. Usado por Device Enrollment.
+
+    SessionMetadata:
+      type: object
+      additionalProperties: false
+      description: Datos capturados durante el paso que se persisten en el registro de Redis.
+      properties:
+        dni:
+          type: string
+          pattern: "^[0-9]{8}$"
+          description: Capturado en /onboarding/start (Fase 2). Solo vive en Redis, nunca se devuelve por HTTP.
+        userSub:
+          type: string
+          format: uuid
+          description: GUID aleatorio generado por sesión (no derivado del DNI). Se indexa como `sub:{userSub}` en Redis.
+        otpCode:
+          type: string
+        otpExpiresAt:
+          type: string
+
+    AdvanceStepRequest:
+      type: object
+      required: [fromStep, toStep]
+      properties:
+        fromStep:
+          $ref: "#/components/schemas/OnboardingStep"
+          description: Paso actual esperado. Si no coincide con el real → 409.
+        toStep:
+          $ref: "#/components/schemas/OnboardingStep"
+          description: Paso al que avanzar
+        metadata:
+          $ref: "#/components/schemas/SessionMetadata"
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        correlationId:
+          type: string
+          format: uuid
+
+  responses:
+    BadRequest:
+      description: Body o parámetros inválidos
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: API Key inválida o ausente
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: unauthorized
+            message: Invalid or missing API Key
+    SessionNotFound:
+      description: Sesión no encontrada o expirada en Redis
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: session_not_found
+            message: Session not found or expired
+    InternalError:
+      description: Error interno
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

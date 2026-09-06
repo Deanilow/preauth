@@ -1,0 +1,62 @@
+---
+# Swagger specification
+openapi: 3.0.2
+info:
+  version: 1.0.0
+  title: Fastify Clean Architecture
+  description: Clean architecture on Fastify example
+servers:
+  - url: /
+paths:
+  # health path to verify application status
+  /health:
+    get:
+      tags:
+        - Health check
+      # response
+      responses:
+        200:
+          description: Successful request
+          content:
+            application/json:
+              # reference to response schema
+              schema:
+                $ref: '#/components/schemas/healthSuccess'
+  # post comment router
+  /api/comment:
+    post:
+      tags:
+        - Public endpoints
+      # response
+      responses:
+        201:
+          description: successful request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedComment'
+# schemas definition
+components:
+  schemas:
+    # schema for a created comment
+    CreatedComment:
+      type: object
+      properties:
+        data:
+          type: string
+    # health check schema response
+    healthSuccess:
+      type: object
+      properties:
+        status:
+          type: string
+        version:
+          type: string
+        releaseId:
+          type: string
+        time:
+          type: string
+        description:
+          type: string
+...
+# end of file

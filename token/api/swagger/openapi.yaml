@@ -1,0 +1,327 @@
+openapi: 3.0.3
+
+info:
+  title: Token Service
+  description: |
+    Emite y valida JWTs firmados con RS256 via KMS/HSM.
+    Expone el endpoint JWKS para que el API Gateway y los Orchestrators
+    puedan verificar firmas sin contactar a este servicio en cada request.
+
+    **Seguridad**: Todos los endpoints (excepto /jwks) requieren autenticación
+    service-to-service via API Key en el header Authorization.
+    La clave privada de firma NUNCA sale del KMS/HSM. El servicio la usa via SDK.
+  version: 1.0.0
+  contact:
+    name: Arquitectura Surgir
+
+servers:
+  - url: http://token-service:4002
+    description: Internal service (no expuesto al internet)
+
+tags:
+  - name: tokens
+    description: Emisión de tokens
+  - name: jwks
+    description: Claves públicas para verificación de firmas
+
+paths:
+
+  # ─── Emit Context Token ──────────────────────────────────────────────────────
+  /tokens/context:
+    post:
+      summary: Emitir contextToken
+      description: |
+        Emite un JWT firmado RS256 para la fase de pre-auth.
+
+        **Claims del token emitido**:
+        - `iss`: identificador de este servicio
+        - `aud`: `preauth-api` (solo válido para el Onboarding Orchestrator)
+        - `scope`: `preauth:onboarding.start`
+        - `channel`: canal de origen (`web` | `app`)
+        - `jti`: UUID único — el receptor lo registra en Redis para anti-replay single-use
+        - `fp`: hash SHA256 del fingerprint del dispositivo
+        - `ipHash`: hash SHA256 de la IP del cliente
+        - `exp`: now + 120 segundos
+        - `iat`: now
+
+        **TTL**: 120 segundos. Single-use: el receptor consume el `jti` al validar.
+      operationId: emitContextToken
+      tags: [tokens]
+      security:
+        - ServiceApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmitContextTokenRequest'
+            example:
+              channel: web
+              fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
+              clientIp: 181.50.10.25
+              correlationId: 550e8400-e29b-41d4-a716-446655440000
+      responses:
+        '200':
+          description: contextToken emitido correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmitTokenResponse'
+              example:
+                token: eyJhbGciOiJSUzI1NiIsImtpZCI6InN1cmdpci0yMDI2MDgifQ...
+                jti: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                expiresIn: 120
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Emit Session Token ───────────────────────────────────────────────────────
+  /tokens/session:
+    post:
+      summary: Emitir sessionToken
+      description: |
+        Emite un JWT firmado RS256 para los pasos de onboarding.
+
+        **Claims del token emitido**:
+        - `iss`: identificador de este servicio
+        - `aud`: `onboarding-service`
+        - `scope`: `onboarding.active`
+        - `sub`: `session:{sessionHandle}` — vincula el token a la sesión
+        - `channel`: canal de origen
+        - `ipHash`: hash SHA256 de la IP del cliente
+        - `jti`: UUID — para trazabilidad (el sessionToken es multi-use, el X-Request-Id es el anti-replay)
+        - `exp`: now + 900 segundos (15 minutos)
+        - `iat`: now
+
+        **TTL**: 15 minutos (debe cubrir el techo absoluto de la sesión en session-service).
+        Multi-use: el receptor usa X-Request-Id para anti-replay por request.
+      operationId: emitSessionToken
+      tags: [tokens]
+      security:
+        - ServiceApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmitSessionTokenRequest'
+            example:
+              sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+              channel: web
+              clientIp: 181.50.10.25
+              correlationId: 550e8400-e29b-41d4-a716-446655440000
+      responses:
+        '200':
+          description: sessionToken emitido correctamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmitTokenResponse'
+              example:
+                token: eyJhbGciOiJSUzI1NiIsImtpZCI6InN1cmdpci0yMDI2MDgifQ...
+                jti: b2c3d4e5-f6a7-8901-bcde-f12345678901
+                expiresIn: 900
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── JWKS ─────────────────────────────────────────────────────────────────────
+  /jwks:
+    get:
+      summary: Obtener claves públicas (JWKS)
+      description: |
+        Expone el JSON Web Key Set con las claves públicas RSA.
+        El API Gateway y los Orchestrators usan este endpoint para verificar
+        firmas de tokens sin contactar al Token Service en cada request.
+
+        **Cache recomendado**: 1 hora (las claves rotan con preaviso).
+        **Sin autenticación**: es público por diseño (solo contiene claves públicas).
+      operationId: getJwks
+      tags: [jwks]
+      responses:
+        '200':
+          description: JWKS con claves públicas activas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwksResponse'
+              example:
+                keys:
+                  - kty: RSA
+                    use: sig
+                    alg: RS256
+                    kid: surgir-20260818
+                    n: 0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx...
+                    e: AQAB
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Health ──────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      tags: [tokens]
+      responses:
+        '200':
+          description: Servicio operativo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: token-service
+
+# ─── Components ───────────────────────────────────────────────────────────────
+components:
+
+  securitySchemes:
+    ServiceApiKey:
+      type: http
+      scheme: bearer
+      description: |
+        API Key de autenticación service-to-service.
+        Valor obtenido del Secret Manager al arranque del servicio.
+
+  schemas:
+
+    EmitContextTokenRequest:
+      type: object
+      required: [channel, fingerprint, clientIp, correlationId]
+      properties:
+        channel:
+          type: string
+          enum: [web, app]
+          description: Canal de origen del request
+        fingerprint:
+          type: string
+          minLength: 32
+          maxLength: 128
+          description: Hash SHA256 del fingerprint del dispositivo generado en el cliente
+        clientIp:
+          type: string
+          format: ipv4
+          description: IP del cliente (obtenida del API Gateway, no del cliente directamente)
+        correlationId:
+          type: string
+          format: uuid
+          description: ID de correlación para trazabilidad end-to-end
+
+    EmitSessionTokenRequest:
+      type: object
+      required: [sessionHandle, channel, clientIp, correlationId]
+      properties:
+        sessionHandle:
+          type: string
+          format: uuid
+          description: Identificador opaco de la sesión de onboarding en Redis
+        channel:
+          type: string
+          enum: [web, app]
+        clientIp:
+          type: string
+          format: ipv4
+        correlationId:
+          type: string
+          format: uuid
+
+    EmitTokenResponse:
+      type: object
+      required: [token, jti, expiresIn]
+      properties:
+        token:
+          type: string
+          description: JWT firmado RS256
+        jti:
+          type: string
+          format: uuid
+          description: JWT ID único del token. El receptor lo usa para anti-replay en Redis.
+        expiresIn:
+          type: integer
+          description: Segundos hasta la expiración del token
+          example: 120
+
+    JwksResponse:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [kty, use, alg, kid, n, e]
+            properties:
+              kty:
+                type: string
+                example: RSA
+              use:
+                type: string
+                example: sig
+              alg:
+                type: string
+                example: RS256
+              kid:
+                type: string
+                description: Key ID — referenciado en el header del JWT
+                example: surgir-20260818
+              n:
+                type: string
+                description: RSA modulus en Base64url
+              e:
+                type: string
+                description: RSA exponent en Base64url
+                example: AQAB
+
+    ErrorResponse:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Código de error legible por máquina
+        message:
+          type: string
+          description: Descripción del error
+        correlationId:
+          type: string
+          format: uuid
+
+  responses:
+    BadRequest:
+      description: Body o parámetros inválidos
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: validation_error
+            message: "channel must be 'web' or 'app'"
+    Unauthorized:
+      description: API Key inválida o ausente
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: unauthorized
+            message: Invalid or missing API Key
+    InternalError:
+      description: Error interno del servidor
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: internal_error
+            message: Internal server error
