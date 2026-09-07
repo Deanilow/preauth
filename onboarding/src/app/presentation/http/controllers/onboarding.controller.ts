@@ -56,7 +56,6 @@ export class OnboardingController {
     return this.onboardingUseCase.verifyOtp({
       sessionToken,
       sessionHandle: req.body.sessionHandle,
-      otpCode: req.body.otpCode,
       ctx: this.buildContext(req),
     });
   }
@@ -66,7 +65,6 @@ export class OnboardingController {
     return this.onboardingUseCase.verifyFace({
       sessionToken,
       sessionHandle: req.body.sessionHandle,
-      faceToken: req.body.faceToken,
       ctx: this.buildContext(req),
     });
   }
@@ -76,7 +74,6 @@ export class OnboardingController {
     return this.onboardingUseCase.verifyOcr({
       sessionToken,
       sessionHandle: req.body.sessionHandle,
-      ocrToken: req.body.ocrToken,
       ctx: this.buildContext(req),
     });
   }

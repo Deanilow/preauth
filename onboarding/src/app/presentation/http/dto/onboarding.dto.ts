@@ -13,17 +13,14 @@ export interface StartResponseDto {
 
 export interface VerifyOtpBodyDto {
   sessionHandle: string;
-  otpCode?: string;
 }
 
 export interface VerifyFaceBodyDto {
   sessionHandle: string;
-  faceToken?: string;
 }
 
 export interface VerifyOcrBodyDto {
   sessionHandle: string;
-  ocrToken?: string;
 }
 
 export interface SelectProductsBodyDto {

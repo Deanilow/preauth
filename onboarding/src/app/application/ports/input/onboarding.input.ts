@@ -24,21 +24,18 @@ export interface StartResponse {
 export interface VerifyOtpRequest {
   sessionToken: string;
   sessionHandle: string;
-  otpCode?: string;
   ctx: RequestContext;
 }
 
 export interface VerifyFaceRequest {
   sessionToken: string;
   sessionHandle: string;
-  faceToken?: string;
   ctx: RequestContext;
 }
 
 export interface VerifyOcrRequest {
   sessionToken: string;
   sessionHandle: string;
-  ocrToken?: string;
   ctx: RequestContext;
 }
 

@@ -1,10 +1,9 @@
 export const verifyOcrBodySchema = {
   type: 'object',
   properties: {
+    // El ocrToken NO se recibe: la validación de OCR la realiza un proceso externo.
+    // Este orquestador solo avanza la state machine con el sessionHandle.
     sessionHandle: { type: 'string', minLength: 8, maxLength: 128 },
-    // No se valida contenido/formato: la validación real del OCR la hace el flujo
-    // legacy por fuera de este servicio. Aquí solo se simula el paso.
-    ocrToken: { type: 'string' },
   },
   required: ['sessionHandle'],
   additionalProperties: false,

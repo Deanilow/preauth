@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { inject, injectable } from 'tsyringe';
 import { DI_TOKENS } from '../../infrastructure/di/tokens';
 
@@ -36,15 +36,12 @@ function generateUserSub(): string {
   return randomUUID();
 }
 
-function generateOtp(): string {
-  return (randomBytes(3).readUIntBE(0, 3) % 1_000_000).toString().padStart(6, '0');
-}
-
 /**
- * Orquesta las 5 fases de onboarding (start -> otp -> face -> products -> password),
- * validando en cada paso: firma+audiencia+scope del JWT (contextToken/sessionToken),
- * anti-replay sobre Redis, vinculación de canal e IP, y la secuencia estricta de la
- * state machine que vive en Session Service.
+ * Orquesta las fases de onboarding (start -> otp -> ocr -> face), avanzando la
+ * state machine que vive en Session Service. La validación real de OTP / OCR /
+ * biometría facial la realiza un proceso externo; este orquestador NO genera ni
+ * valida esos códigos/tokens: solo garantiza que el paso esperado coincida
+ * (fase3Guard) y avanza al siguiente.
  */
 @injectable()
 export class OnboardingUseCase implements OnboardingInputPort {
@@ -94,13 +91,15 @@ export class OnboardingUseCase implements OnboardingInputPort {
 
     const userSub = generateUserSub();
 
+    // Este orquestador NO genera el OTP: la validación del código la realiza un
+    // proceso externo. Solo avanza a otp_pending con el dni + userSub.
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'context_issued',
       toStep: 'otp_pending',
       metadata: { dni: req.dni, userSub },
     }, req.ctx.correlationId);
 
-    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] start OK -> ocr_pending');
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] start OK -> otp_pending');
 
     const sessionToken = await this.issueSessionToken(req.sessionHandle, session.channel, req.ctx);
 
@@ -110,49 +109,45 @@ export class OnboardingUseCase implements OnboardingInputPort {
   // ─── Fase 3: pasos protegidos por sessionToken ────────────────────────────
 
   async verifyOtp(req: VerifyOtpRequest): Promise<StepAdvancedResponse> {
-    const session = await this.fase3Guard(req.sessionToken, req.sessionHandle, 'otp_pending', req.ctx);
+    await this.fase3Guard(req.sessionToken, req.sessionHandle, 'otp_pending', req.ctx);
 
-    // Simulado: la validación real del código OTP la realiza el flujo legacy que se
-    // integrará por fuera de este servicio. Aquí solo se avanza el estado.
+    // La validación real del OTP la realiza un proceso externo. Este orquestador solo
+    // avanza la state machine a ocr_pending (sin recibir ni validar el código).
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'otp_pending',
       toStep: 'ocr_pending',
     }, req.ctx.correlationId);
 
-    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] otp OK -> password_pending');
-    return { step: updated.step, sub: session.userSub };
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] otp step OK -> ocr_pending');
+    return { step: updated.step };
   }
 
   async verifyFace(req: VerifyFaceRequest): Promise<StepAdvancedResponse> {
-    await this.fase3Guard(req.sessionToken, req.sessionHandle, 'face_pending', req.ctx);
+    const session = await this.fase3Guard(req.sessionToken, req.sessionHandle, 'face_pending', req.ctx);
 
-    // Simulado: la validación real del rostro la realiza el flujo legacy que se
-    // integrará por fuera de este servicio. Aquí solo se avanza el estado.
-
-    // El OTP se genera recién aquí: en el nuevo orden, otp_pending queda después de
-    // face_pending, así que el código debe existir al crear ese estado.
-    const otpCode = generateOtp();
-    const otpExpiresAt = new Date(Date.now() + 300_000).toISOString(); // 300s == TTL de otp_pending
-
+    // La validación biométrica real la realiza un proceso externo. Solo avanzamos
+    // la state machine a password_pending. El `sub` (GUID del usuario) se expone
+    // recién aquí, en el último paso que ejecuta este orquestador.
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'face_pending',
       toStep: 'password_pending',
-      metadata: { otpCode, otpExpiresAt },
     }, req.ctx.correlationId);
 
-    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] face OK -> otp_pending');
-    return { step: updated.step };
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] face step OK -> password_pending');
+    return { step: updated.step, sub: session.userSub };
   }
 
   async verifyOcr(req: VerifyOcrRequest): Promise<StepAdvancedResponse> {
     await this.fase3Guard(req.sessionToken, req.sessionHandle, 'ocr_pending', req.ctx);
 
+    // La validación de OCR real la realiza un proceso externo. Solo avanzamos la
+    // state machine a face_pending.
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'ocr_pending',
       toStep: 'face_pending',
     }, req.ctx.correlationId);
 
-    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] ocr OK -> face_pending');
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] ocr step OK -> face_pending');
     return { step: updated.step };
   }
 
@@ -189,7 +184,7 @@ export class OnboardingUseCase implements OnboardingInputPort {
       ClientConstants.expectedSessionTokenAud,
     );
 
-    if (claims.scope !== 'onboarding.active') {
+    if (claims.scope !== 'onboarding:steps') {
       throw new BusinessError('INVALID_TOKEN', `unexpected scope='${claims.scope}'`);
     }
     if (claims.sub !== `session:${sessionHandle}`) {

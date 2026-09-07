@@ -28,7 +28,7 @@ export interface ContextTokenClaims {
   iat?: number;
 }
 
-/** Claims verificados de un sessionToken (aud=onboarding-service, scope=onboarding.active). */
+/** Claims verificados de un sessionToken (aud=onboarding-service, scope=onboarding:steps). */
 export interface SessionTokenClaims {
   [claim: string]: unknown;
   iss?: string;
