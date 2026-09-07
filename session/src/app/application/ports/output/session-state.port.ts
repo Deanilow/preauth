@@ -1,9 +1,11 @@
-import { SessionRecord } from '../../../domain/entities/session-state';
+import { SessionRecord, SessionClientInfo } from '../../../domain/entities/session-state';
 
 export interface SessionStatePort {
   save(sessionHandle: string, record: SessionRecord, ttlSeconds: number): Promise<void>;
   find(sessionHandle: string): Promise<SessionRecord | undefined>;
   delete(sessionHandle: string): Promise<void>;
-  linkSub(userSub: string, sessionHandle: string, ttlSeconds: number): Promise<void>;
-  findByUserSub(userSub: string): Promise<SessionRecord | undefined>;
+  /** Guarda el índice sub:{userSub} -> SessionClientInfo (proyección del cliente). */
+  linkSub(userSub: string, clientInfo: SessionClientInfo, ttlSeconds: number): Promise<void>;
+  /** Resuelve por sub: UNA sola lectura de sub:{userSub}. */
+  findByUserSub(userSub: string): Promise<SessionClientInfo | undefined>;
 }

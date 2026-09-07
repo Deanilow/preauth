@@ -1,5 +1,5 @@
 import { Channel } from '../../../domain/entities/channel';
-import { OnboardingStep, SessionMetadata } from '../../../domain/entities/session-state';
+import { OnboardingStep, SessionMetadata, SessionClientInfo } from '../../../domain/entities/session-state';
 
 export interface CreateSessionRequest {
   channel: Channel;
@@ -40,7 +40,7 @@ export interface VerifyOtpResponse {
 export interface SessionInputPort {
   createSession(req: CreateSessionRequest): Promise<CreateSessionResponse>;
   getSession(sessionHandle: string): Promise<SessionStateResponse>;
-  getSessionByUserSub(userSub: string): Promise<SessionStateResponse>;
+  getSessionByUserSub(userSub: string): Promise<SessionClientInfo>;
   advanceStep(sessionHandle: string, req: AdvanceStepRequest): Promise<SessionStateResponse>;
   invalidateSession(sessionHandle: string): Promise<void>;
   verifyOtp(sessionHandle: string, otpCode: string): Promise<VerifyOtpResponse>;

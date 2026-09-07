@@ -5,7 +5,7 @@ info:
   description: |
     Gestiona el estado de la sesión de onboarding en Redis (real, no in-memory)
     mediante una state machine. Cada sesión avanza por pasos definidos:
-    `context_issued` → `ocr_pending` → `face_pending` → `otp_pending` →
+    `context_issued` → `otp_pending` → `ocr_pending` → `face_pending` →
     `password_pending` → `completed`.
 
     El estado se almacena en Redis con TTL diferente por paso, con un techo
@@ -15,8 +15,9 @@ info:
     El DNI capturado en `/onboarding/start` (Fase 2) se persiste en el registro
     de la sesión junto con `userSub` (GUID aleatorio generado para esa sesión,
     no derivado del DNI). `userSub` también se indexa como clave secundaria
-    `sub:{userSub}` en Redis para que otros servicios puedan consultarlo
-    directamente contra Redis, sin pasar por la API HTTP de este servicio.
+    `sub:{userSub}` con la **proyección del cliente** (`sessionHandle`, `userSub`,
+    `dni`, `fingerprint`) para que otros servicios resuelvan por `sub` con UNA
+    sola lectura a Redis — sin pasar por la API HTTP ni conocer `flow:{sessionHandle}`.
 
     **Seguridad**: Todos los endpoints requieren autenticación service-to-service
     via API Key. El sessionHandle es un UUID opaco sin información deducible.
@@ -127,6 +128,47 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  # ─── Get Session by userSub ──────────────────────────────────────────────────
+  /sessions/by-sub/{userSub}:
+    get:
+      summary: Obtener datos del cliente por sub (GUID del DNI)
+      description: |
+        Resuelve el índice `sub:{userSub}` en Redis (creado en context_issued→otp_pending)
+        y devuelve la proyección del cliente: `sessionHandle`, `userSub`, `dni` y
+        `fingerprint`. Permite que otro servicio obtenga los datos del cliente por su
+        `sub` sin conocer el `sessionHandle` ni el estado completo, con UNA sola
+        lectura a Redis. Devuelve 404 si el `sub` no existe o ya expiró.
+      operationId: getSessionByUserSub
+      tags: [sessions]
+      security:
+        - ServiceApiKey: []
+      parameters:
+        - name: userSub
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Proyección del cliente
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionClientInfo"
+              example:
+                sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+                userSub: 9c858901-8a57-4791-81fe-4c455b099bc9
+                dni: "87654321"
+                fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
+        "404":
+          $ref: "#/components/responses/SessionNotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   # ─── Advance Step ─────────────────────────────────────────────────────────────
   /sessions/{sessionHandle}/advance:
     put:
@@ -140,19 +182,19 @@ paths:
 
         | Paso actual | Siguiente paso | Nuevo TTL |
         |---|---|---|
-        | `context_issued` | `ocr_pending` | 120s |
+        | `context_issued` | `otp_pending` | 180s |
+        | `otp_pending` | `ocr_pending` | 180s |
         | `ocr_pending` | `face_pending` | 120s |
-        | `face_pending` | `otp_pending` | 120s |
-        | `otp_pending` | `password_pending` | 120s |
-        | `password_pending` | `completed` | 120s |
+        | `face_pending` | `password_pending` | 300s |
+        | `password_pending` | `completed` | 60s |
 
-        **Metadata por paso**: en `context_issued → ocr_pending` (Fase 2,
-        `/onboarding/start`) se debe enviar `metadata.dni` y `metadata.userSub`
-        para persistirlos en el registro de Redis. `userSub` además se indexa
-        como `sub:{userSub}` para consulta directa desde otros servicios. El
-        código OTP (`metadata.otpCode`/`otpExpiresAt`) se envía recién en la
-        transición `face_pending → otp_pending`, ya que ese paso quedó después
-        de la validación biométrica en el nuevo orden.
+        **Metadata por paso**: en `context_issued → otp_pending` (Fase 2,
+        `/onboarding/start`) se debe enviar `metadata.dni`, `metadata.userSub`,
+        `metadata.otpCode` y `metadata.otpExpiresAt` para persistirlos en el
+        registro de Redis. `userSub` además se indexa como `sub:{userSub}` para
+        consulta directa desde otros servicios. El OTP se genera en
+        `/onboarding/start` y se valida en `/onboarding/otp` (vía `verify-otp`),
+        porque `otp_pending` es el paso inmediatamente posterior a `context_issued`.
 
         Si el paso solicitado no coincide con el paso actual → `409 Conflict`.
         Si la sesión no existe → `404 Not Found`.
@@ -172,10 +214,12 @@ paths:
               $ref: "#/components/schemas/AdvanceStepRequest"
             example:
               fromStep: context_issued
-              toStep: ocr_pending
+              toStep: otp_pending
               metadata:
                 dni: "87654321"
                 userSub: 9c858901-8a57-4791-81fe-4c455b099bc9
+                otpCode: "482913"
+                otpExpiresAt: "2026-08-18T14:26:00Z"
       responses:
         "200":
           description: Sesión avanzada correctamente
@@ -185,7 +229,7 @@ paths:
                 $ref: "#/components/schemas/SessionState"
               example:
                 sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
-                step: ocr_pending
+                step: otp_pending
                 channel: web
                 completedSteps: [context_issued]
                 createdAt: "2026-08-18T14:23:00Z"
@@ -199,8 +243,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                error: step_mismatch
-                message: "Session is at step 'face_pending', cannot advance from 'context_issued'"
+                error:
+                  code: STEP_MISMATCH
+                  message: "Session is at step 'face_pending', cannot advance from 'context_issued'"
+                  level: error
         "410":
           description: Se superó el techo absoluto de 900s desde la creación de la sesión
           content:
@@ -208,8 +254,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                error: session_expired
-                message: Session exceeded the absolute 900s TTL
+                error:
+                  code: SESSION_EXPIRED
+                  message: Session exceeded the absolute 900s TTL
+                  level: error
         "401":
           $ref: "#/components/responses/Unauthorized"
         "500":
@@ -344,11 +392,10 @@ components:
       type: string
       enum:
         - context_issued
+        - otp_pending
         - ocr_pending
         - face_pending
-        - otp_pending
         - password_pending
-        - password_creation
         - completed
       description: |
         Pasos de la state machine de onboarding.
@@ -420,6 +467,25 @@ components:
           type: string
           description: Hash del fingerprint del dispositivo capturado en la creación de la sesión. Usado por Device Enrollment.
 
+    SessionClientInfo:
+      type: object
+      required: [sessionHandle, userSub, fingerprint]
+      description: Proyección del cliente almacenada en `sub:{userSub}`. Se resuelve por sub con una sola lectura a Redis (información del cliente, no el estado completo).
+      properties:
+        sessionHandle:
+          type: string
+          format: uuid
+        userSub:
+          type: string
+          format: uuid
+        dni:
+          type: string
+          pattern: "^[0-9]{8}$"
+          description: DNI capturado en /onboarding/start. Dato sensible (PII): solo para consumo service-to-service.
+        fingerprint:
+          type: string
+          description: Hash del fingerprint del dispositivo.
+
     SessionMetadata:
       type: object
       additionalProperties: false
@@ -432,11 +498,13 @@ components:
         userSub:
           type: string
           format: uuid
-          description: GUID aleatorio generado por sesión (no derivado del DNI). Se indexa como `sub:{userSub}` en Redis.
+          description: GUID aleatorio generado por sesión (no derivado del DNI). Se indexa como `sub:{userSub}` con la proyección del cliente.
         otpCode:
           type: string
+          description: Código OTP de 6 dígitos, generado en /onboarding/start (transición context_issued→otp_pending). Solo se valida server-side vía verify-otp; nunca se devuelve por HTTP.
         otpExpiresAt:
           type: string
+          description: ISO-8601 de expiración del OTP. Alineado con el TTL del paso otp_pending.
 
     AdvanceStepRequest:
       type: object
@@ -453,12 +521,21 @@ components:
 
     ErrorResponse:
       type: object
-      required: [error, message]
+      required: [error]
       properties:
         error:
-          type: string
-        message:
-          type: string
+          type: object
+          required: [code, message, level]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            level:
+              type: string
+              enum: [error, warning, info]
+            description:
+              type: string
         correlationId:
           type: string
           format: uuid
@@ -477,8 +554,10 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: unauthorized
-            message: Invalid or missing API Key
+            error:
+              code: UNAUTHORIZED_SERVICE_CALL
+              message: Invalid or missing API Key
+              level: error
     SessionNotFound:
       description: Sesión no encontrada o expirada en Redis
       content:
@@ -486,8 +565,10 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
           example:
-            error: session_not_found
-            message: Session not found or expired
+            error:
+              code: SESSION_NOT_FOUND
+              message: Session not found or expired
+              level: error
     InternalError:
       description: Error interno
       content:

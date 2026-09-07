@@ -9,7 +9,7 @@ import {
   SessionStateResponse,
   AdvanceStepRequest,
 } from '../ports/input/session.input';
-import { OnboardingStep, SessionRecord } from '../../domain/entities/session-state';
+import { OnboardingStep, SessionRecord, SessionClientInfo } from '../../domain/entities/session-state';
 import { logger } from 'app/infrastructure/logger';
 import { BusinessError } from 'src/shared/errors/integration.error';
 
@@ -20,13 +20,16 @@ const INITIAL_TTL_SECONDS = 120;
 const ABSOLUTE_SESSION_TTL_SECONDS = 900;
 
 // Transición estricta de la state machine: no se puede saltar ni retroceder.
-// Cada paso dura 2 minutos (120s) para completarse antes de que la sesión expire.
+// TTL por paso según contrato (orden del código):
+//   context_issued -> otp_pending 180s | otp_pending -> ocr_pending 180s
+//   ocr_pending -> face_pending 120s | face_pending -> password_pending 300s
+//   password_pending -> completed 60s
 const STEP_TRANSITIONS: Partial<Record<OnboardingStep, { next: OnboardingStep; ttlSeconds: number }>> = {
-  context_issued: { next: 'otp_pending', ttlSeconds: 120 },
-  otp_pending: { next: 'ocr_pending', ttlSeconds: 120 },
+  context_issued: { next: 'otp_pending', ttlSeconds: 180 },
+  otp_pending: { next: 'ocr_pending', ttlSeconds: 180 },
   ocr_pending: { next: 'face_pending', ttlSeconds: 120 },
-  face_pending: { next: 'password_pending', ttlSeconds: 120 },
-  password_pending: { next: 'completed', ttlSeconds: 120 },
+  face_pending: { next: 'password_pending', ttlSeconds: 300 },
+  password_pending: { next: 'completed', ttlSeconds: 60 },
 };
 
 const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -81,12 +84,12 @@ export class SessionUseCase implements SessionInputPort {
     return toResponse(record);
   }
 
-  async getSessionByUserSub(userSub: string): Promise<SessionStateResponse> {
-    const record = await this.sessionState.findByUserSub(userSub);
-    if (!record) {
+  async getSessionByUserSub(userSub: string): Promise<SessionClientInfo> {
+    const clientInfo = await this.sessionState.findByUserSub(userSub);
+    if (!clientInfo) {
       throw new BusinessError('SESSION_NOT_FOUND', `userSub=${userSub}`);
     }
-    return toResponse(record);
+    return clientInfo;
   }
 
   async advanceStep(sessionHandle: string, req: AdvanceStepRequest): Promise<SessionStateResponse> {
@@ -129,8 +132,19 @@ export class SessionUseCase implements SessionInputPort {
 
     // Se refresca en cada avance (no solo cuando llega en el metadata de este paso puntual)
     // para que el índice `sub:{userSub}` nunca quede con un TTL más corto que `flow:{sessionHandle}`.
+    // Guarda la proyección del cliente (sessionHandle, userSub, dni, fingerprint) para que
+    // otro proceso resuelva por sub con una sola lectura a Redis.
     if (updated.userSub) {
-      await this.sessionState.linkSub(updated.userSub, sessionHandle, effectiveTtlSeconds);
+      await this.sessionState.linkSub(
+        updated.userSub,
+        {
+          sessionHandle,
+          userSub: updated.userSub,
+          dni: updated.dni,
+          fingerprint: updated.fingerprint,
+        },
+        effectiveTtlSeconds,
+      );
     }
 
     logger.info({ sessionHandle, step: updated.step }, '[Session] advanced');

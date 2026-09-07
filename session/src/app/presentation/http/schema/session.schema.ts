@@ -33,6 +33,18 @@ const correlationIdHeader = {
   additionalProperties: true,
 };
 
+// Proyección del cliente almacenada en `sub:{userSub}`. Se resuelve por sub con
+// UNA sola lectura a Redis, devolviendo los datos del cliente (no el estado completo).
+const sessionClientInfoResponse = {
+  type: 'object',
+  properties: {
+    sessionHandle: { type: 'string' },
+    userSub: { type: 'string' },
+    dni: { type: 'string', description: 'DNI capturado en /onboarding/start. Dato sensible (PII): solo para consumo service-to-service.' },
+    fingerprint: { type: 'string', description: 'Hash del fingerprint del dispositivo.' },
+  },
+};
+
 export const createSessionSchema = {
   summary: 'Crear sesión de onboarding',
   description: 'Crea una nueva sesión en Redis con estado inicial `context_issued` y TTL de 120 segundos.',
@@ -82,8 +94,8 @@ export const getSessionSchema = {
 };
 
 export const getSessionByUserSubSchema = {
-  summary: 'Obtener estado de una sesión por sub (GUID del DNI)',
-  description: 'Resuelve el sessionHandle a partir del índice `sub:{userSub}` en Redis (creado en context_issued->ocr_pending) y devuelve el estado completo de la sesión. Pensado para que otros servicios (ej. flujo legacy) busquen al cliente por su `sub` sin conocer el sessionHandle. Devuelve 404 si el `sub` no existe o el índice/registro ya expiró.',
+  summary: 'Obtener datos del cliente por sub (GUID del DNI)',
+  description: 'Resuelve el índice `sub:{userSub}` en Redis (creado en context_issued->otp_pending) y devuelve la proyección del cliente: sessionHandle, userSub, dni y fingerprint. Pensado para que otros servicios (ej. flujo legacy) obtengan los datos del cliente por su `sub` sin conocer el sessionHandle ni el estado completo. Devuelve 404 si el `sub` no existe o ya expiró.',
   tags: ['sessions'],
   security: [{ bearerAuth: [] }],
   headers: correlationIdHeader,
@@ -96,7 +108,7 @@ export const getSessionByUserSubSchema = {
     },
   },
   response: {
-    200: sessionStateResponse,
+    200: sessionClientInfoResponse,
     ...commonErrorResponses,
   },
 };

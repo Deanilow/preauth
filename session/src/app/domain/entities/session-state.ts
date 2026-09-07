@@ -27,3 +27,19 @@ export interface SessionRecord extends SessionMetadata {
   stepExpiry: string;
   absoluteExpiresAt: string;
 }
+
+/**
+ * Proyección del cliente almacenada en el índice `sub:{userSub}`.
+ * Permite que otro proceso resuelva por `sub` (GUID) obteniendo los datos del
+ * cliente (DNI, fingerprint, sessionHandle) con UNA sola lectura a Redis, sin
+ * depender de conocer `flow:{sessionHandle}` ni del shape completo del registro.
+ *
+ * Los campos son inmutables durante el flujo (se setean una vez), así que la
+ * proyección no necesita re-escribirse salvo para refrescar su TTL.
+ */
+export interface SessionClientInfo {
+  sessionHandle: string;
+  userSub: string;
+  dni?: string;
+  fingerprint: string;
+}

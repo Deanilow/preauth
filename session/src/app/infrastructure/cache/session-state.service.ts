@@ -1,7 +1,7 @@
 import { singleton } from 'tsyringe';
 import Redis from 'ioredis';
 import { SessionStatePort } from '../../application/ports/output/session-state.port';
-import { SessionRecord } from '../../domain/entities/session-state';
+import { SessionRecord, SessionClientInfo } from '../../domain/entities/session-state';
 import { ClientConstants } from '../clients/client.constants';
 import { logger } from 'app/infrastructure/logger';
 
@@ -10,7 +10,11 @@ const SUB_KEY_PREFIX = 'sub:';
 
 /**
  * Adaptador real contra Redis para el estado de sesión (`flow:{sessionHandle}`)
- * y su índice secundario por `sub` (`sub:{userSub}` -> sessionHandle).
+ * y su índice secundario por `sub` (`sub:{userSub}` -> SessionClientInfo).
+ *
+ * El índice `sub:{userSub}` guarda la proyección del cliente (sessionHandle,
+ * userSub, dni, fingerprint) para que otro proceso resuelva por `sub` con UNA
+ * sola lectura, sin depender de `flow:{sessionHandle}` ni del shape completo.
  *
  * Redis maneja el TTL nativamente (`SET ... EX <ttlSeconds>`): al expirar,
  * la clave desaparece sola, sin necesidad de limpieza manual.
@@ -44,13 +48,13 @@ export class SessionStateService implements SessionStatePort {
     await this.client.del(FLOW_KEY_PREFIX + sessionHandle);
   }
 
-  async linkSub(userSub: string, sessionHandle: string, ttlSeconds: number): Promise<void> {
-    await this.client.set(SUB_KEY_PREFIX + userSub, sessionHandle, 'EX', ttlSeconds);
+  async linkSub(userSub: string, clientInfo: SessionClientInfo, ttlSeconds: number): Promise<void> {
+    await this.client.set(SUB_KEY_PREFIX + userSub, JSON.stringify(clientInfo), 'EX', ttlSeconds);
   }
 
-  async findByUserSub(userSub: string): Promise<SessionRecord | undefined> {
-    const sessionHandle = await this.client.get(SUB_KEY_PREFIX + userSub);
-    if (!sessionHandle) return undefined;
-    return this.find(sessionHandle);
+  async findByUserSub(userSub: string): Promise<SessionClientInfo | undefined> {
+    const raw = await this.client.get(SUB_KEY_PREFIX + userSub);
+    if (!raw) return undefined;
+    return JSON.parse(raw) as SessionClientInfo;
   }
 }
