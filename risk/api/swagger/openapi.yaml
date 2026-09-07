@@ -1,62 +1,460 @@
 ---
-# Swagger specification
-openapi: 3.0.2
+# Risk Engine — OpenAPI
+# Servicio interno (no expuesto al internet). Autenticación service-to-service via API Key.
+openapi: 3.0.3
 info:
+  title: Risk Engine
   version: 1.0.0
-  title: Fastify Clean Architecture
-  description: Clean architecture on Fastify example
+  description: |
+    Evalúa el riesgo de un request en tiempo real combinando múltiples señales:
+    IP, fingerprint, user-agent, canal, score de anti-bot, velocidad de requests,
+    historial del fingerprint y metadata de dispositivo nativo (Play Integrity / DeviceCheck).
+
+    Devuelve un score de 0 (riesgo bajo) a 100 (riesgo alto) y una decisión:
+    - `allow`: continuar el flujo normalmente
+    - `challenge`: exigir un factor adicional (CAPTCHA extra, OTP, etc.)
+    - `deny`: bloquear el request
+
+    **Fail closed**: si el Risk Engine no está disponible, el PreAuth Orchestrator
+    debe denegar el request por seguridad (nunca fail open).
+
+    **Seguridad**: Todos los endpoints requieren autenticación service-to-service
+    via API Key. El Risk Engine NO recibe PII del usuario (no hay nombre, email, etc.).
+    Solo señales técnicas del dispositivo y la red.
+  contact:
+    name: Arquitectura Surgir
+
 servers:
-  - url: /
+  - url: http://risk-engine:4001
+    description: Internal service (no expuesto al internet)
+
+tags:
+  - name: risk
+    description: Evaluación de riesgo
+  - name: anti-bot
+    description: Verificación anti-bot (hCaptcha)
+  - name: health
+    description: Health check
+
 paths:
-  # health path to verify application status
+
+  # ─── Anti-Bot (hCaptcha) ───────────────────────────────────────────────────────
+  /verify:
+    post:
+      summary: Verificar token anti-bot (hCaptcha)
+      description: |
+        Valida el token de hCaptcha contra el endpoint real `POST /siteverify`.
+        Si no hay `HCAPTCHA_SECRET` cae en modo bypass (`metadata.mode='bypass'`),
+        que el Risk Engine penaliza como "sin validación real".
+        Responde siempre `200`, incluso con token inválido — quien llama decide
+        qué hacer con `verified: false`.
+      operationId: verifyAntiBot
+      tags: [anti-bot]
+      security:
+        - ServiceApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyAntiBotRequest'
+            example:
+              channel: web
+              captchaToken: 10000000-aaaa-bbbb-cccc-000000000001
+              clientIp: 181.50.10.25
+      responses:
+        '200':
+          description: Verificación completada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyAntiBotResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ─── Evaluate Risk ────────────────────────────────────────────────────────────
+  /evaluate:
+    post:
+      summary: Evaluar riesgo de un request
+      description: |
+        Evalúa el riesgo combinando señales técnicas del dispositivo y la red.
+
+        **Señales evaluadas**:
+        - `clientIp`: reputación de IP, geolocalización, velocidad de viaje, blacklists
+        - `fingerprint`: si es un dispositivo conocido, si es dispositivo nuevo, si viaja
+          (travelAnomaly) entre IPs distintas
+        - `userAgent`: consistencia con el fingerprint del dispositivo
+        - `channel`: señales específicas por canal (web vs app)
+        - `antiBotScore`: score del hCaptcha / Play Integrity (0.0 a 1.0)
+        - `deviceMetadata`: atestación de integridad de dispositivo nativo (opcional)
+        - `correlationId`: para correlacionar con otros eventos en el SIEM
+
+        **Algoritmo de decisión**:
+        ```
+        score 0–24  → allow
+        score 25–64 → challenge
+        score 65–100 → deny
+        ```
+      operationId: evaluateRisk
+      tags: [risk]
+      security:
+        - ServiceApiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EvaluateRiskRequest'
+            example:
+              clientIp: 181.50.10.25
+              fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
+              userAgent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+              channel: web
+              antiBotScore: 0.92
+              deviceMetadata:
+                provider: play_integrity
+                verdict: MEETS_DEVICE_INTEGRITY
+                isEmulator: false
+                isRooted: false
+              correlationId: 550e8400-e29b-41d4-a716-446655440000
+      responses:
+        '200':
+          description: Evaluación completada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluateRiskResponse'
+              examples:
+                allow:
+                  summary: Request de bajo riesgo
+                  value:
+                    score: 12
+                    decision: allow
+                    signals:
+                      ipReputation: clean
+                      fingerprintKnown: false
+                      userAgentConsistent: true
+                      antiBotScore: 0.92
+                      velocityCheck: ok
+                      newDevice: true
+                      travelAnomaly: false
+                challenge:
+                  summary: Request de riesgo medio (dispositivo nuevo + IP diferente)
+                  value:
+                    score: 42
+                    decision: challenge
+                    signals:
+                      ipReputation: clean
+                      fingerprintKnown: false
+                      userAgentConsistent: true
+                      antiBotScore: 0.75
+                      velocityCheck: ok
+                      newDevice: true
+                      travelAnomaly: true
+                deny:
+                  summary: Request de alto riesgo (IP en blacklist)
+                  value:
+                    score: 88
+                    decision: deny
+                    signals:
+                      ipReputation: blacklisted
+                      fingerprintKnown: false
+                      userAgentConsistent: false
+                      antiBotScore: 0.1
+                      velocityCheck: exceeded
+                      newDevice: true
+                      travelAnomaly: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   /health:
     get:
-      tags:
-        - Health check
-      # response
+      summary: Health check
+      operationId: health
+      tags: [health]
       responses:
-        200:
-          description: Successful request
-          content:
-            application/json:
-              # reference to response schema
-              schema:
-                $ref: '#/components/schemas/healthSuccess'
-  # post comment router
-  /api/comment:
-    post:
-      tags:
-        - Public endpoints
-      # response
-      responses:
-        201:
-          description: successful request
+        '200':
+          description: Servicio operativo
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CreatedComment'
-# schemas definition
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: risk-engine
+
 components:
+
+  securitySchemes:
+    ServiceApiKey:
+      type: http
+      scheme: bearer
+      description: API Key de autenticación service-to-service desde Secret Manager.
+
   schemas:
-    # schema for a created comment
-    CreatedComment:
+
+    VerifyAntiBotRequest:
       type: object
+      required: [channel, captchaToken]
       properties:
-        data:
+        channel:
           type: string
-    # health check schema response
-    healthSuccess:
+          enum: [web, app]
+        captchaToken:
+          type: string
+          minLength: 10
+        clientIp:
+          type: string
+          format: ipv4
+          description: HCaptcha lo usa como remoteip para habilitar el score Enterprise/Pro.
+
+    AntiBotMetadata:
       type: object
+      description: Metadata de la verificación hCaptcha (Enterprise/Pro).
       properties:
-        status:
+        provider:
           type: string
-        version:
+          enum: [hcaptcha]
+        mode:
           type: string
-        releaseId:
+          enum: [live, bypass]
+        hostname:
           type: string
-        time:
+        challengeTs:
           type: string
-        description:
+        errorCodes:
+          type: array
+          items:
+            type: string
+        botScore:
+          type: number
+        botScoreReason:
+          type: array
+          items:
+            type: string
+        rawBotScore:
+          type: number
+        scoreLevel:
           type: string
+        pass:
+          type: boolean
+
+    VerifyAntiBotResponse:
+      type: object
+      required: [verified, score, provider, metadata]
+      properties:
+        verified:
+          type: boolean
+        score:
+          type: number
+          description: Confianza (1 = humano, 0 = bot).
+        provider:
+          type: string
+          enum: [hcaptcha]
+        metadata:
+          $ref: '#/components/schemas/AntiBotMetadata'
+
+    DeviceMetadata:
+      type: object
+      description: |
+        Metadata de dispositivo nativo (Play Integrity / DeviceCheck). Opcional:
+        si el cliente lo envía, enriquece el score. No es PII.
+      properties:
+        provider:
+          type: string
+          enum: [play_integrity, device_check, app_attest, web]
+        verdict:
+          type: string
+          enum: [MEETS_DEVICE_INTEGRITY, MEETS_BASIC_INTEGRITY, MEETS_STRONG_INTEGRITY, pass, fail, unknown]
+        appVersion:
+          type: string
+        os:
+          type: string
+          enum: [android, ios, web]
+        osVersion:
+          type: string
+        model:
+          type: string
+        manufacturer:
+          type: string
+        isEmulator:
+          type: boolean
+        isRooted:
+          type: boolean
+        attestationToken:
+          type: string
+
+    EvaluateRiskRequest:
+      type: object
+      required: [clientIp, fingerprint, userAgent, channel, antiBotScore, correlationId]
+      properties:
+        clientIp:
+          type: string
+          format: ipv4
+          description: |
+            IP del cliente extraída del API Gateway (X-Forwarded-For).
+            Nunca debe provenir directamente del cliente.
+        fingerprint:
+          type: string
+          minLength: 32
+          maxLength: 128
+          description: Hash SHA256 del fingerprint del dispositivo generado en el cliente
+        userAgent:
+          type: string
+          maxLength: 512
+          description: User-Agent header del request original del cliente
+        channel:
+          type: string
+          enum: [web, app]
+          description: Canal de origen del request
+        antiBotScore:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          description: |
+            Score del proveedor anti-bot (0.0 = bot seguro, 1.0 = humano seguro).
+        antiBotMetadata:
+          $ref: '#/components/schemas/AntiBotMetadata'
+        deviceMetadata:
+          $ref: '#/components/schemas/DeviceMetadata'
+        forceDecision:
+          type: string
+          enum: [allow, challenge, deny]
+          description: Hook de simulación, no contractual.
+        correlationId:
+          type: string
+          format: uuid
+          description: ID de correlación para trazabilidad en SIEM
+
+    RiskDecision:
+      type: string
+      enum: [allow, challenge, deny]
+      description: |
+        Decisión del Risk Engine:
+        - `allow`: continuar el flujo
+        - `challenge`: exigir factor adicional
+        - `deny`: bloquear inmediatamente
+
+    RiskSignals:
+      type: object
+      description: |
+        Señales evaluadas por el Risk Engine. El detalle sirve para auditoria y
+        debugging del modelo de riesgo. Los campos son dinámicos según las señales.
+      properties:
+        ipReputation:
+          type: string
+          enum: [clean, suspicious, blacklisted, tor, vpn, proxy]
+        fingerprintKnown:
+          type: boolean
+          description: Si el fingerprint fue visto antes en requests válidos
+        userAgentConsistent:
+          type: boolean
+          description: Si el UserAgent es consistente con el fingerprint del dispositivo
+        antiBotScore:
+          type: number
+          description: Score del proveedor anti-bot reenviado como señal
+        velocityCheck:
+          type: string
+          enum: [ok, warning, exceeded]
+          description: Frecuencia de requests desde la misma IP en la última ventana
+        newDevice:
+          type: boolean
+          description: Si es el primer request desde este fingerprint
+        travelAnomaly:
+          type: boolean
+          description: Si el fingerprint fue visto desde una IP distinta (viaje/ASN)
+        deviceMetadata:
+          $ref: '#/components/schemas/DeviceMetadata'
+        breakdown:
+          type: object
+          description: Desglose de pesos del score (auditoría).
+        antiBotMetadata:
+          $ref: '#/components/schemas/AntiBotMetadata'
+      additionalProperties: true
+
+    EvaluateRiskResponse:
+      type: object
+      required: [score, decision, signals]
+      properties:
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: |
+            Score de riesgo calculado:
+            - 0–24: bajo riesgo → allow
+            - 25–64: riesgo medio → challenge
+            - 65–100: alto riesgo → deny
+        decision:
+          $ref: '#/components/schemas/RiskDecision'
+        signals:
+          $ref: '#/components/schemas/RiskSignals'
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, level]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            level:
+              type: string
+              enum: [error, warning, info]
+            description:
+              type: string
+        correlationId:
+          type: string
+          format: uuid
+
+  responses:
+    BadRequest:
+      description: Body o parámetros inválidos
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: REQUEST_VALIDATION_ERROR
+              message: antiBotScore must be between 0.0 and 1.0
+              level: error
+    Unauthorized:
+      description: API Key inválida o ausente
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: UNAUTHORIZED_SERVICE_CALL
+              message: Invalid or missing API Key
+              level: error
+    InternalError:
+      description: Error interno — el PreAuth Orchestrator debe hacer fail closed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error:
+              code: UNEXPECTED_ERROR
+              message: Internal server error
+              level: error
 ...
-# end of file

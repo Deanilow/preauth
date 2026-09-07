@@ -16,6 +16,9 @@ export interface HCaptchaSiteVerifyResult {
   errorCodes?: string[];
   botScore?: number;
   botScoreReason?: string[];
+  // Campos Enterprise/Pro: el score puede venir como `score` (bot) o alias.
+  scoreLevel?: string;
+  pass?: boolean;
   rawResponse?: Record<string, unknown>; // Mantiene la respuesta JSON íntegra recibida
 }
 
@@ -71,17 +74,15 @@ export class HCaptchaClient {
       throw new IntegrationError(`Invalid JSON from hCaptcha: ${raw.substring(0, 200)}`, 502, raw, endpoint, undefined, undefined, 'HCaptchaService');
     }
 
-    // LOG DE INSPECCIÓN: Imprime el JSON completo recibido de hCaptcha
     logger.info(
       {
         client: 'HCaptchaService',
         success: parsed.success,
-        rawPayload: parsed, // <-- Aquí verás absolutamente todos los campos que devuelva hCaptcha en tu ambiente
+        rawPayload: parsed, 
       },
       '[HCaptchaClient] OK siteverify raw payload',
     );
 
-    // Mapeo flexible de razones (compatibilidad entre score_reason, score_reasons y reasons)
     const scoreReason = (parsed.score_reason || parsed.score_reasons || parsed.reasons) as string[] | undefined;
 
     return {
@@ -89,8 +90,10 @@ export class HCaptchaClient {
       challengeTs: parsed.challenge_ts as string | undefined,
       hostname: parsed.hostname as string | undefined,
       errorCodes: parsed['error-codes'] as string[] | undefined,
-      botScore: (parsed.score ?? parsed.bot_score) as number | undefined,
+      botScore: (parsed.score ?? parsed.bot_score ?? parsed.captcha_score) as number | undefined,
       botScoreReason: scoreReason,
+      scoreLevel: parsed.score_level as string | undefined,
+      pass: parsed.pass as boolean | undefined,
       rawResponse: parsed,
     };
   }

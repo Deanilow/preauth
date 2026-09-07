@@ -2,6 +2,7 @@ import { inject, injectable } from 'tsyringe';
 import { DI_TOKENS } from '../../infrastructure/di/tokens';
 import { AntiBotInputPort, VerifyAntiBotRequest, VerifyAntiBotResponse } from '../ports/input/anti-bot.input';
 import { HCaptchaClient } from 'app/infrastructure/clients/hcaptcha.client';
+import { ClientConstants } from 'app/infrastructure/clients/client.constants';
 import { logger } from 'app/infrastructure/logger';
 
 @injectable()
@@ -12,9 +13,22 @@ export class AntiBotUseCase implements AntiBotInputPort {
   ) { }
 
   async verify(req: VerifyAntiBotRequest): Promise<VerifyAntiBotResponse> {
+    if (!ClientConstants.hcaptchaSecret) {
+      const isForcedFail = req.captchaToken === 'FORCE_FAIL';
+      logger.warn(
+        { channel: req.channel, forcedFail: isForcedFail },
+        '[AntiBot] bypass (HCAPTCHA_SECRET ausente)',
+      );
+      return {
+        verified: !isForcedFail,
+        score: isForcedFail ? 0.1 : 0.9,
+        provider: 'hcaptcha',
+        metadata: { provider: 'hcaptcha', mode: 'bypass' },
+      };
+    }
+
     const result = await this.hCaptchaClient.siteVerify(req.captchaToken, req.clientIp);
 
-    // LOG ESTRUCTURADO: Muestra en consola/Datadog toda la metadata devuelta
     logger.info(
       {
         channel: req.channel,
@@ -42,7 +56,10 @@ export class AntiBotUseCase implements AntiBotInputPort {
         errorCodes: result.errorCodes,
         botScore: result.botScore,
         botScoreReason: result.botScoreReason,
-        // rawResponse: result.rawResponse, // <-- Propaga el payload crudo hacia Risk Engine
+        rawBotScore: result.botScore,
+        scoreLevel: result.scoreLevel,
+        pass: result.pass,
+        // rawResponse: result.rawResponse, // <-- Descomentar para propagar el payload crudo al Risk Engine
       },
     };
   }

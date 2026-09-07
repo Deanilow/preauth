@@ -2,8 +2,13 @@
 
 ## Qué es / qué no es
 - Es el **risk engine** que incluye internamente el módulo **anti-bot hCaptcha** (no separado en otro repo).
-- `POST /anti-bot/verify` valida el captcha real contra hCaptcha; `POST /risk/evaluate` produce `allow|challenge|deny`.
+- `POST /anti-bot/verify` valida el captcha real contra hCaptcha (Enterprise/Pro: `botScore`, `botScoreReason`, `pass`; `mode='bypass'` si no hay `HCAPTCHA_SECRET`); `POST /risk/evaluate` produce `allow|challenge|deny`.
 - **No** es el punto de entrada público ni manipula sesiones/tokens: expone servicios consumidos por `preauth-orchestrator`.
+- Score 0-100 desde: `antiBotScore`+metadata hCaptcha, reputación IP, velocity por `clientIp`, historial del fingerprint (`fingerprintKnown`/`newDevice`/`travelAnomaly`/`userAgentConsistent`) y `deviceMetadata` nativo (Play Integrity/DeviceCheck). El `fingerprint` sí puntúa.
+- Contrato OpenAPI real: `risk/api/swagger/openapi.yaml`.
+
+## TODO pendiente
+- **Play Integrity / DeviceCheck**: hoy el campo `deviceMetadata` en `POST /risk/evaluate` es **deny-accepted pero no se valida server-side** contra el proveedor. Falta la integración real con Google Play Integrity (Android) y Apple DeviceCheck/App Attest (iOS). El token de atestación viaja en `captchaToken` de Preauth; se debe validar y mapear a `deviceMetadata.verdict` antes de que impacte el score.
 
 ## Comandos
 - `npm run build` — `tsc --build tsconfig.json && tsc-alias`

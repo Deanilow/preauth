@@ -14,6 +14,11 @@ export interface AntiBotMetadata {
   errorCodes?: string[];
   botScore?: number;
   botScoreReason?: string[];
+  // Campos Enterprise/Pro (pueden o no venir según el plan). Se reutilizan en el
+  // score del Risk Engine; quedan opcionales para no romper consumidores actuales.
+  rawBotScore?: number;
+  scoreLevel?: string;
+  pass?: boolean;
 }
 
 export interface VerifyAntiBotResponse {

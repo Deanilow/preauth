@@ -5,16 +5,19 @@ export const verifyAntiBotSchema = {
   description: `
 Valida el token de hCaptcha contra el endpoint real \`POST /siteverify\` del proveedor
 (no generamos el token, solo lo leemos). Si no hay \`HCAPTCHA_SECRET\` configurado, cae
-en modo bypass de desarrollo. Responde siempre \`200\`, incluso cuando el token es
-invalido — quien llama decide que hacer con \`verified: false\`.
+en modo bypass de desarrollo y se devuelve \`metadata.mode='bypass'\` — el Risk Engine
+lo penaliza como "sin validación real", no como tráfico limpio. Responde siempre \`200\`,
+incluso cuando el token es inválido — quien llama decide qué hacer con \`verified: false\`.
 
 \`clientIp\` es recomendado (no obligatorio): hCaptcha lo usa como \`remoteip\` para
-mejorar precision y habilitar el score Enterprise en la respuesta.
+mejorar precisión y habilitar el score Enterprise/Pro (\`score\`, \`score_reason\`,
+\`hostname\`, \`challenge_ts\`, \`pass\`) en la respuesta. Esos campos se propagan en
+\`metadata\` y alimentan el score del Risk Engine.
 
-Sin Play Integrity / App Attest en esta version (fuera de alcance).
+Sin Play Integrity / App Attest en esta versión (fuera de alcance).
 
 **Bypass de desarrollo** (solo si no hay \`HCAPTCHA_SECRET\`): el valor \`FORCE_FAIL\`
-en \`captchaToken\` simula un captcha invalido.
+en \`captchaToken\` simula un captcha inválido.
   `,
   tags: ['anti-bot'],
   security: [{ bearerAuth: [] }],
@@ -45,6 +48,9 @@ en \`captchaToken\` simula un captcha invalido.
             errorCodes: { type: 'array', items: { type: 'string' } },
             botScore: { type: 'number' },
             botScoreReason: { type: 'array', items: { type: 'string' } },
+            rawBotScore: { type: 'number' },
+            scoreLevel: { type: 'string' },
+            pass: { type: 'boolean' },
           },
         },
       },
