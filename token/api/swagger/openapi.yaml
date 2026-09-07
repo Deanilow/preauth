@@ -88,7 +88,7 @@ paths:
         **Claims del token emitido**:
         - `iss`: identificador de este servicio
         - `aud`: `onboarding-service`
-        - `scope`: `onboarding.active`
+        - `scope`: `onboarding:steps`
         - `sub`: `session:{sessionHandle}` — vincula el token a la sesión
         - `channel`: canal de origen
         - `ipHash`: hash SHA256 de la IP del cliente
@@ -285,14 +285,23 @@ components:
 
     ErrorResponse:
       type: object
-      required: [error, message]
+      required: [error]
       properties:
         error:
-          type: string
-          description: Código de error legible por máquina
-        message:
-          type: string
-          description: Descripción del error
+          type: object
+          required: [code, message, level]
+          properties:
+            code:
+              type: string
+              description: Código de error legible por máquina
+            message:
+              type: string
+              description: Descripción del error
+            level:
+              type: string
+              enum: [error, warning, info]
+            description:
+              type: string
         correlationId:
           type: string
           format: uuid
@@ -305,8 +314,10 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: validation_error
-            message: "channel must be 'web' or 'app'"
+            error:
+              code: REQUEST_VALIDATION_ERROR
+              message: "channel must be 'web' or 'app'"
+              level: error
     Unauthorized:
       description: API Key inválida o ausente
       content:
@@ -314,8 +325,10 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: unauthorized
-            message: Invalid or missing API Key
+            error:
+              code: UNAUTHORIZED_SERVICE_CALL
+              message: Invalid or missing API Key
+              level: error
     InternalError:
       description: Error interno del servidor
       content:
@@ -323,5 +336,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
           example:
-            error: internal_error
-            message: Internal server error
+            error:
+              code: UNEXPECTED_ERROR
+              message: Internal server error
+              level: error
