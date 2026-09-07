@@ -1,693 +1,269 @@
 openapi: 3.0.3
 info:
-  title: sur-auth-appcli-onboarding-preauth-orchestrator 
+  title: PreAuth Orchestrator
   version: 1.0.0
   description: |
-    API de fachada para consultar productos de clientes y movimientos de cuentas.
-    - Lista de productos del cliente
-    - Movimientos paginados por producto (con filtros)
-    - Detalle de un movimiento
+    Orquesta el flujo de pre-autenticación para canales Web y App.
+    Es el único punto de entrada para la fase pre-auth. Coordina internamente:
+    Anti-bot Service, Risk Engine, Token Service y Session Service.
+
+    **Este servicio NO requiere token en sus endpoints** porque es el que genera
+    el primer token del flujo (contextToken). La protección es por:
+    - Rate limiting en el API Gateway (IP-based)
+    - Validación de hCaptcha / Play Integrity (anti-bot)
+    - Evaluación del Risk Engine (score + decisión)
+
+    **Flujo completo post /pre-auth/context-init**:
+    ```
+    /pre-auth/context-init → contextToken + sessionHandle
+    /onboarding/start      → sessionToken  (requiere contextToken)
+    /onboarding/otp        → (requiere sessionToken + X-Request-Id)
+    /onboarding/ocr        → (requiere sessionToken + X-Request-Id)
+    /onboarding/face       → (requiere sessionToken + X-Request-Id)
+    /onboarding/products   → (requiere sessionToken + X-Request-Id)
+    ```
+
+    > ⚠️ **Pendiente (no implementado)**: validación server-side de la atestación
+    > de dispositivo nativo (Play Integrity / DeviceCheck) dentro de `captchaToken`.
+    > Hoy se valida vía hCaptcha. La metadata de dispositivo se dejará anotada como
+    > `TODO` y no forma parte del contrato actual.
+  contact:
+    name: Arquitectura Surgir
+
+servers:
+  - url: https://api.surgir.com
+    description: Producción (expuesto via API Gateway)
+  - url: http://localhost:3000
+    description: Desarrollo local
 
 tags:
-  - name: Productos
-    description: Productos del cliente, movimientos y detalle de movimientos
+  - name: pre-auth
+    description: Endpoints del flujo pre-autenticación
 
 paths:
-  /customers/{customerId}/products:
-    get:
-      operationId: listCustomerProducts
-      tags: [Productos]
-      summary: Listar productos del cliente
-      parameters:
-        - name: customerId
-          in: path
-          required: true
-          schema: { type: integer, minimum: 1 }
-          description: Identificador numérico del cliente
-          example: 159
-        - $ref: "#/components/parameters/x-request-id"
-        - $ref: "#/components/parameters/x-api-key"
-        - $ref: "#/components/parameters/x-financial-id"
-        - $ref: "#/components/parameters/x-end-user-login"
-        - $ref: "#/components/parameters/x-end-user-request-date-time"
-        - $ref: "#/components/parameters/x-end-user-terminal"
-        - $ref: "#/components/parameters/x-end-user-last-logged-date-time"
-        - $ref: "#/components/parameters/x-jws-signature"
-        - $ref: "#/components/parameters/x-reverse"
-        - $ref: "#/components/parameters/x-requestId-to-reverse"
-        - $ref: "#/components/parameters/x-channel"
-        - $ref: "#/components/parameters/Accept-Language"
-      responses:
-        200:
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: array
-                items: { $ref: "#/components/schemas/ProductItem" }
-              examples:
-                example:
-                  summary: Ejemplo de productos
-                  value:
-                    - productId: "FLEX-00012345"
-                      accountNumber: "10301000000196"
-                      productType: "AHORRO DE CUENTA FLEXIBLE"
-                      description: "Ahorro flexible"
-                      currency: "PEN"
-                      availableBalance: 1520.35
-        400: { $ref: "#/components/responses/BadRequest" }
-        401: { $ref: "#/components/responses/Unauthorized" }
-        403: { $ref: "#/components/responses/Forbidden" }
-        404: { $ref: "#/components/responses/NotFound" }
-        409: { $ref: "#/components/responses/Conflict" }
-        500: { $ref: "#/components/responses/InternalError" }
 
-  /products/movements:
+  # ─── Context Init ─────────────────────────────────────────────────────────────
+  /pre-auth/context-init:
     post:
-      operationId: listProductMovements
-      tags: [Productos]
-      summary: Consultar movimientos del producto
+      summary: Iniciar flujo de pre-auth
       description: |
-        Consulta movimientos por número de cuenta.
-        Solo accountNumber es obligatorio.
+        Inicia el flujo de pre-autenticación. Es el primer endpoint del ciclo de vida
+        del usuario. No requiere token de autenticación.
 
-        Reglas:
-        - pg y pageSize aplican sobre el resultado final procesado por el backend.
-        - Si se envía date, se consulta solo ese día y se ignoran from/to.
-        - Si no se envía date, from y to deben enviarse juntos para consultar un rango.
-        - Las fechas deben ser válidas en formato YYYY-MM-DD; el servicio no corrige fechas inválidas.
-        - operationType, q, amountMin y amountMax solo filtran cuando se envían.
-        - q es la búsqueda libre de la app móvil y filtra por concepto/detalle del movimiento.
-        - Si no se envían fechas, el servicio usa un rango por defecto.
-        - q usa el mismo rango de fechas por defecto cuando no se envían fechas.
-        - El backend recorre las páginas de integración usando meta.TotalPages o meta.totalResult.
-        - La data se ordena por transactionTime descendente antes de aplicar filtros y paginación pública.
-        - La cantidad de páginas internas se toma de meta.TotalPages o meta.totalResult informado por integración.
+        **Flujo interno que orquesta**:
+        1. Valida el token anti-bot contra hCaptcha (web) o Play Integrity (app) server-side
+        2. Evalúa el riesgo del request (IP, fingerprint, user-agent, canal, score anti-bot)
+        3. Si `allow`: emite `contextToken` (TTL 120s, single-use) via Token Service
+        4. Si `allow`: crea sesión de onboarding en Redis via Session Service
+        5. Devuelve `contextToken` + `sessionHandle` al cliente
+
+        **El `contextToken` es single-use**: al canjearlo en `/onboarding/start`,
+        el jti queda registrado en Redis como consumido. Un segundo intento con el
+        mismo token devuelve 401.
+      operationId: contextInit
+      tags: [pre-auth]
       parameters:
-        - $ref: "#/components/parameters/x-request-id"
-        - $ref: "#/components/parameters/x-api-key"
-        - $ref: "#/components/parameters/x-financial-id"
-        - $ref: "#/components/parameters/x-end-user-login"
-        - $ref: "#/components/parameters/x-end-user-request-date-time"
-        - $ref: "#/components/parameters/x-end-user-terminal"
-        - $ref: "#/components/parameters/x-end-user-last-logged-date-time"
-        - $ref: "#/components/parameters/x-jws-signature"
-        - $ref: "#/components/parameters/x-reverse"
-        - $ref: "#/components/parameters/x-requestId-to-reverse"
-        - $ref: "#/components/parameters/x-channel"
-        - $ref: "#/components/parameters/Accept-Language"
+        - $ref: "#/components/parameters/CorrelationId"
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ProductMovementsRequest" }
+            schema:
+              $ref: '#/components/schemas/ContextInitRequest'
             examples:
-              example:
-                summary: Solicitud de movimientos
+              web:
+                summary: Request desde canal Web
                 value:
-                  accountNumber: "10301000000196"
-                  pg: 1
-                  pageSize: 15
-                  q: "Trans."
-                  amountMin: 10
-                  amountMax: 200
-                  operationType: "EXPENSE"
-                  from: "2026-03-01"
-                  to: "2026-03-31"
+                  channel: web
+                  fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
+                  captchaToken: P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
+              app:
+                summary: Request desde canal App (Android)
+                value:
+                  channel: app
+                  fingerprint: b7c4d9e1f2a3b5c6d8e0f1a2b4c6d8e0
+                  captchaToken: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
       responses:
-        200:
-          description: OK
+        '200':
+          description: Pre-auth completado. contextToken y sessionHandle listos para usar.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/MovementsResponse" }
+              schema:
+                $ref: '#/components/schemas/ContextInitResponse'
+              example:
+                contextToken: eyJhbGciOiJSUzI1NiIsImtpZCI6InN1cmdpci0yMDI2MDgifQ...
+                sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+                expiresIn: 120
+        '400':
+          description: Body inválido (channel, fingerprint o captchaToken faltante/inválido)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: REQUEST_VALIDATION_ERROR
+                  message: "channel must be 'web' or 'app'"
+                  level: error
+        '403':
+          description: |
+            Anti-bot rechazado o Risk Engine denegó el request.
+            El cliente NO debe reintentar inmediatamente (puede ser detección de bot).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
               examples:
-                example:
-                  summary: Ejemplo de movimientos
+                bot_detected:
+                  summary: hCaptcha inválido
                   value:
-                    product:
-                      productId: "FLEX-00012345"
-                      productType: "AHORRO DE CUENTA FLEXIBLE"
-                      currency: "PEN"
-                      bankAccountNumber: "00012345"
-                      interbankAccountNumber: "002-123-00012345-00"
-                      interestBonus: "Diario"
-                      trea: 3.5
-                      maintenanceFee: "0.0"
-                      openedAt: "2024-01-15T10:30:00-05:00"
-                    movements:
-                      - movementId: "MOV-001"
-                        operationType: "INCOME"
-                        signedAmount: 300211.0
-                        currency: "PEN"
-                        occurredAt: "2026-03-12T09:06:00-05:00"
-                        timeLabel: "09:06 AM"
-                        detail: "Dep. de haberes 5ta categ..."
-                      - movementId: "MOV-002"
-                        operationType: "EXPENSE"
-                        signedAmount: -800.0
-                        currency: "PEN"
-                        occurredAt: "2026-03-12T09:06:00-05:00"
-                        timeLabel: "09:06 AM"
-                        detail: "Trans. a BCP 992-1233456454..."
-                    page:
-                      pg: 1
-                      pageSize: 15
-                      returned: 2
-                      hasMore: false
-        400: { $ref: "#/components/responses/BadRequest" }
-        401: { $ref: "#/components/responses/Unauthorized" }
-        403: { $ref: "#/components/responses/Forbidden" }
-        404: { $ref: "#/components/responses/NotFound" }
-        409: { $ref: "#/components/responses/Conflict" }
-        500: { $ref: "#/components/responses/InternalError" }
-
-  /products/{productId}/movements/{movementId}:
-    get:
-      operationId: getMovementDetail
-      tags: [Productos]
-      summary: Consultar detalle de movimiento
-      parameters:
-        - name: productId
-          in: path
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 64 }
-          example: "SAV-00012345"
-        - name: movementId
-          in: path
-          required: true
-          schema: { type: string, minLength: 1, maxLength: 64 }
-          example: "MOV-001"
-        - $ref: "#/components/parameters/x-request-id"
-        - $ref: "#/components/parameters/x-api-key"
-        - $ref: "#/components/parameters/x-financial-id"
-        - $ref: "#/components/parameters/x-end-user-login"
-        - $ref: "#/components/parameters/x-end-user-request-date-time"
-        - $ref: "#/components/parameters/x-end-user-terminal"
-        - $ref: "#/components/parameters/x-end-user-last-logged-date-time"
-        - $ref: "#/components/parameters/x-jws-signature"
-        - $ref: "#/components/parameters/x-reverse"
-        - $ref: "#/components/parameters/x-requestId-to-reverse"
-        - $ref: "#/components/parameters/x-channel"
-        - $ref: "#/components/parameters/Accept-Language"
-      responses:
-        200:
-          description: OK
+                    error:
+                      code: BOT_DETECTED
+                      message: Anti-bot validation failed
+                      level: error
+                risk_denied:
+                  summary: Risk Engine denegó
+                  value:
+                    error:
+                      code: RISK_DENIED
+                      message: Request denied
+                      level: error
+        '429':
+          description: |
+            Risk Engine requiere challenge adicional o rate limit excedido.
+            El cliente puede mostrar un flujo de verificación adicional.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/MovementDetail" }
-        400: { $ref: "#/components/responses/BadRequest" }
-        401: { $ref: "#/components/responses/Unauthorized" }
-        403: { $ref: "#/components/responses/Forbidden" }
-        404: { $ref: "#/components/responses/NotFound" }
-        409: { $ref: "#/components/responses/Conflict" }
-        500: { $ref: "#/components/responses/InternalError" }
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: CHALLENGE_REQUIRED
+                  message: Additional verification required
+                  level: error
+        '500':
+          description: Error interno. Servicios dependientes no disponibles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error:
+                  code: CONTEXT_INIT_FAILED
+                  message: Internal server error
+                  level: error
+
+  # ─── Health ──────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      tags: [pre-auth]
+      responses:
+        '200':
+          description: Servicio operativo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: preauth-orchestrator
 
 components:
-  responses:
-    BadRequest:
-      description: Solicitud inválida
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/ErrorResponse" }
-    Unauthorized:
-      description: No autorizado
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/ErrorResponse" }
-    Forbidden:
-      description: Denegado
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/ErrorResponse" }
-    NotFound:
-      description: No encontrado
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/ErrorResponse" }
-    Conflict:
-      description: Conflicto
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/ErrorResponse" }
-    InternalError:
-      description: Error interno del servidor
-      content:
-        application/json:
-          schema: { $ref: "#/components/schemas/ErrorResponse" }
 
   parameters:
-    x-request-id:
-      name: x-request-id
+    CorrelationId:
+      name: x-correlation-id
       in: header
       required: true
-      description: Identificador único de la solicitud
       schema:
         type: string
         format: uuid
-      example: 123e4567-e89b-12d3-a456-426614174000
-
-    x-financial-id:
-      name: x-financial-id
-      in: header
-      required: false
-      description: Identificador de la entidad financiera
-      schema:
-        type: string
-        maxLength: 30
-      example: BANK001
-
-    x-end-user-login:
-      name: x-end-user-login
-      in: header
-      required: true
-      description: Usuario final que origina la solicitud
-      schema:
-        type: string
-        maxLength: 30
-      example: user.name@bank.com
-
-    x-end-user-request-date-time:
-      name: x-end-user-request-date-time
-      in: header
-      required: true
-      description: Fecha y hora de la solicitud en formato ISO
-      schema:
-        type: string
-        format: date-time
-      example: "2025-04-20T14:30:00Z"
-
-    x-end-user-terminal:
-      name: x-end-user-terminal
-      in: header
-      required: true
-      description: Terminal o dispositivo de origen
-      schema:
-        type: string
-        maxLength: 30
-        pattern: "^[a-zA-Z0-9_.\\-+:\\/]{0,30}$"
-      example: "192.168.1.100"
-
-    x-end-user-last-logged-date-time:
-      name: x-end-user-last-logged-date-time
-      in: header
-      required: false
-      description: Fecha y hora del último inicio de sesión
-      schema:
-        type: string
-        format: date-time
-      example: "2025-04-20T10:00:00Z"
-
-    x-jws-signature:
-      name: x-jws-signature
-      in: header
-      required: false
-      description: Firma JWS
-      schema:
-        type: string
-      example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-
-    x-reverse:
-      name: x-reverse
-      in: header
-      required: false
-      description: Indicador de reverso
-      schema:
-        type: string
-        enum: ["true", "false"]
-        default: "false"
-      example: "false"
-
-    x-requestId-to-reverse:
-      name: x-requestId-to-reverse
-      in: header
-      required: false
-      description: Identificador de la transacción a reversar
-      schema:
-        type: string
-        format: uuid
-      example: 123e4567-e89b-12d3-a456-426614174000
-
-    Accept-Language:
-      name: Accept-Language
-      in: header
-      required: false
-      description: Idioma preferido
-      schema:
-        type: string
-        default: ES-EC
-      example: ES-EC
-
-    x-channel:
-      name: x-channel
-      in: header
-      required: false
-      description: Canal
-      schema:
-        type: string
-      example: WEB
-
-    x-api-key:
-      name: x-api-key
-      in: header
-      required: true
-      description: Clave de API
-      schema:
-        type: string
-        minLength: 1
-        maxLength: 255
-      example: OHxXXwO2ub9LHCiYmpTad2m48SWOmiUD1AAQ8znh
+      description: |
+        Generado por el API Gateway y propagado a todos los servicios internos.
+        Si el cliente lo envía, el Gateway lo respeta. Si no, el Gateway lo genera.
 
   schemas:
-    ProductType:
-      type: string
-      enum: ["AHORRO DE CUENTA FLEXIBLE", "CUENTA DE AHORROS SIMPLE SOLES", "OTRO"]
-      description: Tipo de producto
 
-    OperationType:
-      type: string
-      enum: [INCOME, EXPENSE]
-      description: Tipo de operación
-
-    Currency:
-      type: string
-      enum: [PEN, USD]
-      description: Moneda ISO. COBIS currency.code 0 se traduce a PEN y 1 se traduce a USD.
-
-    ProductItem:
+    ContextInitRequest:
       type: object
-      additionalProperties: false
-      required: [productId, accountNumber, productType, description, currency, availableBalance]
+      required: [channel, fingerprint, captchaToken]
       properties:
-        productId:
+        channel:
           type: string
-          maxLength: 64
-          example: "SAV-00012345"
-        accountNumber:
+          enum: [web, app]
+          description: Canal de origen del request
+        fingerprint:
           type: string
-          minLength: 5
-          maxLength: 24
-          description: Número de cuenta usado para consultar movimientos en POST /products/movements
-          example: "10301000000196"
-        productType:
-          $ref: "#/components/schemas/ProductType"
-        description:
+          minLength: 32
+          maxLength: 128
+          description: |
+            Hash SHA256 del fingerprint del dispositivo.
+            Generado en el cliente (JavaScript en Web, SDK en App).
+            El servidor lo usa para detección de riesgo y binding de sesión.
+            NUNCA enviar el fingerprint sin hashear (privacy).
+        captchaToken:
           type: string
-          maxLength: 100
-          example: "Ahorro Simple"
-        currency:
-          $ref: "#/components/schemas/Currency"
-          example: "PEN"
-        availableBalance:
-          type: number
-          format: double
-          example: 1520.35
+          minLength: 10
+          description: |
+            Token de hCaptcha (canal web) o Play Integrity / DeviceCheck (canal app).
+            Generado en el cliente resolviendo el challenge.
+            El servidor valida este token contra el proveedor server-side.
+            NUNCA confiar en la respuesta del cliente directamente.
 
-    ProductMovementsRequest:
+    ContextInitResponse:
       type: object
-      additionalProperties: false
-      required: [accountNumber]
+      required: [contextToken, sessionHandle, expiresIn]
       properties:
-        accountNumber:
+        contextToken:
           type: string
-          minLength: 5
-          maxLength: 24
-          description: Número de cuenta
-          example: "10301000000196"
-        pg:
+          description: |
+            JWT firmado RS256. TTL 120 segundos. Single-use.
+            El cliente lo presenta en /onboarding/start.
+            Almacenar en memoria (nunca localStorage).
+        sessionHandle:
+          type: string
+          format: uuid
+          description: |
+            Identificador opaco de la sesión de onboarding en Redis.
+            El cliente lo presenta como header X-Session-Handle en cada paso.
+            Almacenar en memoria (nunca localStorage).
+        expiresIn:
           type: integer
-          minimum: 1
-          default: 1
-          description: Página solicitada
-          example: 1
-        pageSize:
-          type: integer
-          minimum: 1
-          maximum: 50
-          default: 15
-          description: Tamaño de página. Si no se envía y no hay filtros de negocio, el backend usa PRODUCT_MOVEMENTS_COBIS_PAGE_SIZE_DEFAULT. Si no se envía y hay q, operationType, amountMin o amountMax, usa PRODUCT_MOVEMENTS_PAGE_SIZE_MAX. El máximo permitido se controla con PRODUCT_MOVEMENTS_PAGE_SIZE_MAX.
-          example: 15
-        q:
-          type: string
-          maxLength: 120
-          description: Búsqueda libre por concepto o detalle del movimiento
-          example: "Trans."
-        amountMin:
-          type: number
-          format: double
-          description: Monto mínimo
-          example: 15
-        amountMax:
-          type: number
-          format: double
-          description: Monto máximo
-          example: 200
-        operationType:
-          $ref: "#/components/schemas/OperationType"
-        date:
-          type: string
-          format: date
-          description: Fecha única. Si se envía, se ignoran from y to.
-          example: "2026-03-12"
-        from:
-          type: string
-          format: date
-          description: Fecha inicial. Se usa solo si no se envía date y debe venir junto con to.
-          example: "2026-03-01"
-        to:
-          type: string
-          format: date
-          description: Fecha final. Se usa solo si no se envía date y debe venir junto con from.
-          example: "2026-03-31"
-
-    MovementsResponse:
-      type: object
-      additionalProperties: false
-      required: [product, movements, page]
-      properties:
-        product:
-          $ref: "#/components/schemas/ProductSummary"
-        movements:
-          type: array
-          items: { $ref: "#/components/schemas/MovementItem" }
-        page:
-          $ref: "#/components/schemas/Page"
-
-    ProductSummary:
-      type: object
-      additionalProperties: false
-      required:
-        - productId
-        - productType
-        - currency
-        - bankAccountNumber
-        - interestBonus
-        - openedAt
-      properties:
-        productId:
-          type: string
-          maxLength: 64
-          example: "SAV-00012345"
-        productType:
-          $ref: "#/components/schemas/ProductType"
-        currency:
-          $ref: "#/components/schemas/Currency"
-          example: "PEN"
-        bankAccountNumber:
-          type: string
-          maxLength: 24
-          description: Número de cuenta bancaria
-          example: "00012345"
-        interbankAccountNumber:
-          type: string
-          maxLength: 40
-          description: Cuenta interbancaria (CCI)
-          example: "002-123-00012345-00"
-        interestBonus:
-          type: string
-          example: "Diario"
-        trea:
-          type: number
-          format: double
-          example: 3.5
-        maintenanceFee:
-          type: string
-          example: "0.0"
-        openedAt:
-          type: string
-          format: date-time
-          example: "2024-01-15T10:30:00-05:00"
-
-    MovementItem:
-      type: object
-      additionalProperties: false
-      required: [movementId, operationType, signedAmount, currency, occurredAt, detail]
-      properties:
-        movementId:
-          type: string
-          maxLength: 64
-          example: "MOV-001"
-          description: Numero de operacion del movimiento
-        operationType:
-          $ref: "#/components/schemas/OperationType"
-        signedAmount:
-          type: number
-          format: double
-          description: Monto con signo, positivo para ingresos y negativo para egresos
-          example: -800.0
-        currency:
-          $ref: "#/components/schemas/Currency"
-          example: "PEN"
-        occurredAt:
-          type: string
-          format: date-time
-          example: "2026-03-12T09:06:00-05:00"
-        timeLabel:
-          type: string
-          maxLength: 20
-          example: "09:06 AM"
-        detail:
-          type: string
-          maxLength: 200
-          example: "Trans. a BCP 992-1233456454..."
-
-    Page:
-      type: object
-      additionalProperties: false
-      required: [pg, pageSize, returned, hasMore]
-      properties:
-        pg:
-          type: integer
-          example: 1
-        pageSize:
-          type: integer
-          example: 10
-        returned:
-          type: integer
-          example: 10
-        hasMore:
-          type: boolean
-          example: true
-
-    MovementDetail:
-      type: object
-      additionalProperties: false
-      required:
-        - movementId
-        - productId
-        - productType
-        - amount
-        - occurredAt
-        - occurredAtLabel
-        - movementDetail
-      properties:
-        movementId:
-          type: string
-          maxLength: 64
-          example: "MOV-001"
-        productId:
-          type: string
-          maxLength: 64
-          example: "SAV-00012345"
-        productType:
-          $ref: "#/components/schemas/ProductType"
-        amount:
-          $ref: "#/components/schemas/Money"
-        occurredAt:
-          type: string
-          format: date-time
-          example: "2026-03-12T13:00:00-05:00"
-        occurredAtLabel:
-          type: string
-          maxLength: 60
-          example: "12 de marzo de 2026 - 01:00 PM"
-        operationName:
-          type: string
-          maxLength: 100
-          example: "Transferencia"
-        origin:
-          $ref: "#/components/schemas/Party"
-        destination:
-          $ref: "#/components/schemas/Party"
-        movementDetail:
-          type: string
-          maxLength: 300
-          example: "Trans. a BCP 992-1233456454..."
-        favoriteName:
-          type: string
-          maxLength: 60
-          example: "Don Pepe"
-
-    Money:
-      type: object
-      additionalProperties: false
-      required: [value, currency, signedValue]
-      properties:
-        value:
-          type: number
-          format: double
-          example: 25.5
-        currency:
-          $ref: "#/components/schemas/Currency"
-          example: "PEN"
-        signedValue:
-          type: number
-          format: double
-          example: -25.5
-
-    Party:
-      type: object
-      additionalProperties: false
-      required: [name, reference]
-      properties:
-        name:
-          type: string
-          maxLength: 120
-          example: "Restaurante Don Pepe"
-        reference:
-          type: string
-          maxLength: 64
-          example: "BCP"
+          description: Segundos hasta la expiración del contextToken
+          example: 120
 
     ErrorResponse:
       type: object
-      additionalProperties: false
-      required: [errors]
+      required: [error]
       properties:
-        errors:
-          type: array
-          minItems: 1
-          items: { $ref: "#/components/schemas/ErrorItem" }
-
-    ErrorItem:
-      type: object
-      additionalProperties: false
-      required: [code, message, level, description]
-      properties:
-        code:
+        error:
+          type: object
+          required: [code, message, level]
+          properties:
+            code:
+              type: string
+              description: Código de error legible por máquina
+              enum:
+                - REQUEST_VALIDATION_ERROR
+                - BOT_DETECTED
+                - RISK_DENIED
+                - CHALLENGE_REQUIRED
+                - CONTEXT_INIT_FAILED
+            message:
+              type: string
+              description: Descripción legible por humanos
+            level:
+              type: string
+              enum: [error, warning, info]
+            description:
+              type: string
+        correlationId:
           type: string
-          minLength: 1
-          maxLength: 128
-          example: "ERR001"
-        message:
-          type: string
-          minLength: 1
-          maxLength: 500
-          example: "Acción inválida"
-        level:
-          type: string
-          enum: ["error"]
-          example: "error"
-        description:
-          type: string
-          minLength: 1
-          maxLength: 2000
-          example: "Información del error retornado"
-
-  securitySchemes:
-    bearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-
-security:
-  - bearerAuth: []
+          format: uuid
+          description: ID de correlación para soporte técnico

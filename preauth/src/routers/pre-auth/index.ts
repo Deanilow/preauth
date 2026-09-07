@@ -15,13 +15,18 @@ const commonErrorResponses = {
   500: errorResponseSchema,
 };
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 // Sin auth propia: es el punto de entrada del flujo, antes de que exista cualquier sesion/token.
 // Los errores se resuelven con el buildErrorWrapper global (mismo shape que el resto de la API).
 const routerPreAuth: FastifyPluginCallback = (app: FastifyInstance, _options, done) => {
   // x-correlation-id se resuelve una sola vez por request y viaja en el header de la respuesta,
   // tanto en exito como en error (incluye fallos de validacion de schema, previos al controller).
+  // Si el header llega invalido o ausente, se genera un UUID nuevo para no propagar un valor
+  // que rompa la validacion de downstreams (ej. Risk Engine exige correlationId con format uuid).
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
-    const correlationId = (req.headers['x-correlation-id'] as string) ?? randomUUID();
+    const rawHeader = req.headers['x-correlation-id'] as string | undefined;
+    const correlationId = rawHeader && UUID_RE.test(rawHeader) ? rawHeader : randomUUID();
     (req as FastifyRequest & { correlationId: string }).correlationId = correlationId;
     reply.header('x-correlation-id', correlationId);
   });
