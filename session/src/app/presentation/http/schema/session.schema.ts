@@ -1,21 +1,17 @@
 import { commonErrorResponses } from 'src/shared/schema/errorResponseSchema';
 
-const onboardingStepEnum = [
-  'context_issued',
-  'otp_pending',
-  'face_pending',
-  'ocr_pending',
-  'password_pending',
-  'completed',
-];
+const flowTypeEnum = ['onboarding', 'appclient'];
 
+// Pasos genéricos: cada flujo define sus propios pasos. Acá se acepta cualquier string
+// (la validación estricta de transición la hace la máquina de estados en el usecase).
 const sessionStateResponse = {
   type: 'object',
   properties: {
     sessionHandle: { type: 'string' },
-    step: { type: 'string', enum: onboardingStepEnum },
+    flowType: { type: 'string', enum: flowTypeEnum },
+    step: { type: 'string' },
     channel: { type: 'string', enum: ['web', 'app'] },
-    completedSteps: { type: 'array', items: { type: 'string', enum: onboardingStepEnum } },
+    completedSteps: { type: 'array', items: { type: 'string' } },
     createdAt: { type: 'string' },
     stepExpiry: { type: 'string' },
     dni: { type: 'string', description: 'DNI capturado en /onboarding/start. Dato sensible (PII): solo para consumo service-to-service.' },
@@ -47,14 +43,15 @@ const sessionClientInfoResponse = {
 
 export const createSessionSchema = {
   summary: 'Crear sesión de onboarding',
-  description: 'Crea una nueva sesión en Redis con estado inicial `context_issued` y TTL de 120 segundos.',
+  description: 'Crea una nueva sesión en Redis con estado inicial y TTL según el `flowType` (onboarding | appclient).',
   tags: ['sessions'],
   security: [{ bearerAuth: [] }],
   body: {
     type: 'object',
-    required: ['channel', 'clientIp', 'fingerprint', 'correlationId'],
+    required: ['flowType', 'channel', 'clientIp', 'fingerprint', 'correlationId'],
     additionalProperties: false,
     properties: {
+      flowType: { type: 'string', enum: flowTypeEnum },
       channel: { type: 'string', enum: ['web', 'app'] },
       clientIp: { type: 'string', format: 'ipv4' },
       fingerprint: { type: 'string', minLength: 32, maxLength: 128 },
@@ -66,7 +63,8 @@ export const createSessionSchema = {
       type: 'object',
       properties: {
         sessionHandle: { type: 'string' },
-        step: { type: 'string', enum: onboardingStepEnum },
+        flowType: { type: 'string', enum: flowTypeEnum },
+        step: { type: 'string' },
         expiresIn: { type: 'number' },
       },
     },
@@ -131,8 +129,8 @@ export const advanceStepSchema = {
     required: ['fromStep', 'toStep'],
     additionalProperties: false,
     properties: {
-      fromStep: { type: 'string', enum: onboardingStepEnum },
-      toStep: { type: 'string', enum: onboardingStepEnum },
+      fromStep: { type: 'string' },
+      toStep: { type: 'string' },
       metadata: {
         type: 'object',
         additionalProperties: false,

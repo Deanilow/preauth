@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <title>hCaptcha - Generar Token</title>
+    <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+    <style>
+        body {
+            font-family: monospace;
+            max-width: 600px;
+            margin: 40px auto;
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+
+        h2 {
+            color: #00d4aa;
+        }
+
+        #token-box {
+            background: #16213e;
+            border: 1px solid #0f3460;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 20px;
+            word-break: break-all;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+        }
+
+        .copy-btn {
+            background: #00d4aa;
+            color: #1a1a2e;
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+
+        .copy-btn:hover {
+            background: #00f5c4;
+        }
+
+        .label {
+            color: #e94560;
+            font-weight: bold;
+            margin-top: 16px;
+            display: block;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h2>🔐 hCaptcha — Generar Token</h2>
+    <p>Resuelve el captcha y copia el token generado:</p>
+
+    <!-- ⬇️ REEMPLAZA data-sitekey con tu Site Key -->
+    <div class="h-captcha" data-sitekey="a470148a-b4ae-44aa-8a3a-f4dc861eeee0" data-callback="onCaptchaSuccess"
+        data-theme="dark">
+    </div>
+
+    <div id="token-box">
+        <span class="label">📦 Token generado:</span>
+        <pre id="token-text"></pre>
+        <button class="copy-btn" onclick="copyToken()">📋 Copiar Token</button>
+
+        <span class="label">📏 Longitud:</span>
+        <pre id="token-length"></pre>
+
+        <span class="label">🔍 Decodificado (si es base64):</span>
+        <pre id="token-decoded"></pre>
+    </div>
+
+    <script>
+        function onCaptchaSuccess(token) {
+            document.getElementById('token-box').style.display = 'block';
+            document.getElementById('token-text').textContent = token;
+            document.getElementById('token-length').textContent = token.length + ' caracteres';
+
+            // Intentar decodificar partes base64
+            try {
+                const parts = token.split('.');
+                if (parts.length > 1) {
+                    const decoded = parts.map(p => {
+                        try { return atob(p); } catch { return '[no es base64]'; }
+                    });
+                    document.getElementById('token-decoded').textContent = JSON.stringify(decoded, null, 2);
+                } else {
+                    document.getElementById('token-decoded').textContent = 'Token opaco (no es JWT ni tiene partes base64)';
+                }
+            } catch (e) {
+                document.getElementById('token-decoded').textContent = 'No se pudo decodificar: ' + e.message;
+            }
+        }
+
+        function copyToken() {
+            const token = document.getElementById('token-text').textContent;
+            navigator.clipboard.writeText(token).then(() => alert('✅ Token copiado'));
+        }
+    </script>
+
+</body>
+
+</html>

@@ -1,7 +1,9 @@
 import { Channel } from '../../../domain/entities/channel';
-import { OnboardingStep, SessionMetadata, SessionClientInfo } from '../../../domain/entities/session-state';
+import { FlowType, FlowStep, SessionMetadata, SessionClientInfo } from '../../../domain/entities/session-state';
 
 export interface CreateSessionRequest {
+  /** Flujo al que pertenece la sesión: define su máquina de estados. */
+  flowType: FlowType;
   channel: Channel;
   clientIp: string;
   fingerprint: string;
@@ -10,15 +12,17 @@ export interface CreateSessionRequest {
 
 export interface CreateSessionResponse {
   sessionHandle: string;
-  step: OnboardingStep;
+  flowType: FlowType;
+  step: FlowStep;
   expiresIn: number;
 }
 
 export interface SessionStateResponse {
   sessionHandle: string;
-  step: OnboardingStep;
+  flowType: FlowType;
+  step: FlowStep;
   channel: Channel;
-  completedSteps: OnboardingStep[];
+  completedSteps: FlowStep[];
   createdAt: string;
   stepExpiry: string;
   dni?: string;
@@ -27,8 +31,8 @@ export interface SessionStateResponse {
 }
 
 export interface AdvanceStepRequest {
-  fromStep: OnboardingStep;
-  toStep: OnboardingStep;
+  fromStep: FlowStep;
+  toStep: FlowStep;
   /** Datos capturados en el paso (ej: dni + userSub en /onboarding/start, otpCode al generarlo). */
   metadata?: SessionMetadata;
 }

@@ -3,9 +3,10 @@ import { FastifyReply, FastifyRequest } from 'fastify';
 import { DI_TOKENS } from '../../../infrastructure/di/tokens';
 import { SessionInputPort } from '../../../application/ports/input/session.input';
 import { Channel } from '../../../domain/entities/channel';
-import { OnboardingStep, SessionMetadata } from '../../../domain/entities/session-state';
+import { FlowType, FlowStep, SessionMetadata } from '../../../domain/entities/session-state';
 
 interface CreateSessionBody {
+  flowType: FlowType;
   channel: Channel;
   clientIp: string;
   fingerprint: string;
@@ -21,8 +22,8 @@ interface UserSubParams {
 }
 
 interface AdvanceStepBody {
-  fromStep: OnboardingStep;
-  toStep: OnboardingStep;
+  fromStep: FlowStep;
+  toStep: FlowStep;
   metadata?: SessionMetadata;
 }
 

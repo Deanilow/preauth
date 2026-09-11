@@ -24,6 +24,7 @@ export interface StartResponse {
 export interface VerifyOtpRequest {
   sessionToken: string;
   sessionHandle: string;
+  otpCode: string;
   ctx: RequestContext;
 }
 

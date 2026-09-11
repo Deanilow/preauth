@@ -71,6 +71,7 @@ export class PreAuthUseCase implements PreAuthInputPort {
         correlationId: req.correlationId,
       }),
       this.sessionServiceClient.createSession({
+        flowType: 'onboarding',
         channel: req.channel,
         clientIp: req.clientIp,
         fingerprint: req.fingerprint,

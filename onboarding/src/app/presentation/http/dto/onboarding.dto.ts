@@ -13,6 +13,7 @@ export interface StartResponseDto {
 
 export interface VerifyOtpBodyDto {
   sessionHandle: string;
+  otpCode: string;
 }
 
 export interface VerifyFaceBodyDto {

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID } from 'crypto';
 import { inject, injectable } from 'tsyringe';
 import { DI_TOKENS } from '../../infrastructure/di/tokens';
 
@@ -35,6 +35,17 @@ const sha256Hex = (value: string): string => createHash('sha256').update(value).
 function generateUserSub(): string {
   return randomUUID();
 }
+
+/**
+ * Genera un código OTP de 6 dígitos. Se crea en /onboarding/start y se guarda en
+ * Redis (metadata de la sesión) para validarlo después en /onboarding/otp.
+ */
+function generateOtp(): string {
+  return (randomBytes(3).readUIntBE(0, 3) % 1_000_000).toString().padStart(6, '0');
+}
+
+// Alineado con el TTL del paso `otp_pending` en STEP_TRANSITIONS (session-service).
+const OTP_TTL_SECONDS = 180;
 
 /**
  * Orquesta las fases de onboarding (start -> otp -> ocr -> face), avanzando la
@@ -91,12 +102,15 @@ export class OnboardingUseCase implements OnboardingInputPort {
 
     const userSub = generateUserSub();
 
-    // Este orquestador NO genera el OTP: la validación del código la realiza un
-    // proceso externo. Solo avanza a otp_pending con el dni + userSub.
+    // Genera el OTP acá y lo persiste en Redis (metadata de la sesión) al avanzar a
+    // otp_pending. Se valida después en /onboarding/otp consultando el registro.
+    const otpCode = generateOtp();
+    const otpExpiresAt = new Date(Date.now() + OTP_TTL_SECONDS * 1000).toISOString();
+
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'context_issued',
       toStep: 'otp_pending',
-      metadata: { dni: req.dni, userSub },
+      metadata: { dni: req.dni, userSub, otpCode, otpExpiresAt },
     }, req.ctx.correlationId);
 
     logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] start OK -> otp_pending');
@@ -111,14 +125,22 @@ export class OnboardingUseCase implements OnboardingInputPort {
   async verifyOtp(req: VerifyOtpRequest): Promise<StepAdvancedResponse> {
     await this.fase3Guard(req.sessionToken, req.sessionHandle, 'otp_pending', req.ctx);
 
-    // La validación real del OTP la realiza un proceso externo. Este orquestador solo
-    // avanza la state machine a ocr_pending (sin recibir ni validar el código).
+    if (!req.otpCode) {
+      throw new BusinessError('INVALID_OTP', 'otpCode is required');
+    }
+
+    // Valida el OTP contra session-service (compara record.otpCode/otpExpiresAt en Redis).
+    const otp = await this.sessionServiceClient.verifyOtp(req.sessionHandle, req.otpCode, req.ctx.correlationId);
+    if (!otp.valid) {
+      throw new BusinessError('INVALID_OTP');
+    }
+
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'otp_pending',
       toStep: 'ocr_pending',
     }, req.ctx.correlationId);
 
-    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] otp step OK -> ocr_pending');
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] otp OK -> ocr_pending');
     return { step: updated.step };
   }
 

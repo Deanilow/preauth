@@ -1,12 +1,26 @@
 import { Channel } from './channel';
 
+/**
+ * Tipo de flujo. Cada flujo tiene su propia máquina de estados (pasos + TTLs).
+ * El `flowType` se define al crear la sesión y NO cambia durante el flujo.
+ */
+export type FlowType = 'onboarding' | 'appclient';
+
 export type OnboardingStep =
   | 'context_issued'
   | 'otp_pending'
   | 'ocr_pending'
   | 'face_pending'
   | 'password_pending'
+  | 'enroll_device_pending'
   | 'completed';
+
+/**
+ * Paso genérico de una máquina de estados. Es `string` (no enum estricto) porque
+ * cada flujo define sus propios pasos. Los pasos del onboarding siguen tipados en
+ * `OnboardingStep`.
+ */
+export type FlowStep = string;
 
 export interface SessionMetadata {
   dni?: string;
@@ -17,12 +31,14 @@ export interface SessionMetadata {
 
 export interface SessionRecord extends SessionMetadata {
   sessionHandle: string;
-  step: OnboardingStep;
+  /** Flujo al que pertenece la sesión (define qué máquina de estados aplica). */
+  flowType: FlowType;
+  step: FlowStep;
   channel: Channel;
   ipHash: string;
   fingerprint: string;
   correlationId: string;
-  completedSteps: OnboardingStep[];
+  completedSteps: FlowStep[];
   createdAt: string;
   stepExpiry: string;
   absoluteExpiresAt: string;

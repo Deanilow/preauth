@@ -1,6 +1,7 @@
 import { Channel } from "app/domain/entities/channel";
 
 export interface CreateSessionRequest {
+  flowType: 'onboarding' | 'appclient';
   channel: Channel;
   clientIp: string;
   fingerprint: string;

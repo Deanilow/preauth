@@ -41,7 +41,7 @@ nunca decide el próximo paso; le pide a `session-service` `{fromStep, toStep}` 
 la permitida (si no, `409 STEP_MISMATCH`).
 
 **Nota sobre `password_pending → completed`**: este orquestador implementa el flujo
-solo hasta `password_pending` (endpoint `/onboarding/ocr`, último que ejecuta). Los
+solo hasta `password_pending` (endpoint `/onboarding/face`, último que ejecuta). Los
 endpoints `/onboarding/products` y `/onboarding/password` (que en código todavía
 referencian el paso legado `password_creation`) **no se usan por ahora** — quedan en
 el repositorio sin cambios a la espera de que el otro proceso (fuera de este
@@ -78,23 +78,22 @@ sequenceDiagram
     OO->>OO: consumir jti (anti-replay Redis) / generar sub aleatorio (GUID)
     OO->>SS: GET /sessions/{handle}
     SS-->>OO: { step: context_issued, channel, ipHash, ... }
-    OO->>SS: PUT /sessions/{handle}/advance (toStep=ocr_pending, metadata: dni,userSub)
-    SS->>SS: linkSub(userSub, sessionHandle) — indexa sub:{userSub} -> sessionHandle
+    OO->>SS: PUT /sessions/{handle}/advance (toStep=otp_pending, metadata: dni,userSub)
+    SS->>SS: linkSub(userSub, clientInfo) — indexa sub:{userSub} -> {sessionHandle, dni, fingerprint}
     OO->>TS: POST /tokens/session (sessionHandle, channel, clientIp)
-    TS-->>OO: sessionToken (aud=onboarding-service, scope=onboarding.active, sub=session:{handle}, TTL 900s)
-    OO-->>C: { sessionToken, step: ocr_pending, expiresIn }
+    TS-->>OO: sessionToken (aud=onboarding-service, scope=onboarding:steps, sub=session:{handle}, TTL 900s)
+    OO-->>C: { sessionToken, step: otp_pending, expiresIn }
 
-    C->>OO: POST /onboarding/ocr (Bearer sessionToken, X-Request-Id, ocrToken)
+    C->>OO: POST /onboarding/otp (Bearer sessionToken, X-Request-Id)
+    Note over OO: El proceso externo valida el OTP (no este orquestador)
+    OO->>SS: PUT /sessions/{handle}/advance (toStep=ocr_pending)
+    OO-->>C: { step: ocr_pending }
+
+    C->>OO: POST /onboarding/ocr (Bearer sessionToken, X-Request-Id)
     OO->>SS: PUT /sessions/{handle}/advance (toStep=face_pending)
     OO-->>C: { step: face_pending }
 
-    C->>OO: POST /onboarding/face (Bearer sessionToken, X-Request-Id, faceToken)
-    OO->>SS: PUT /sessions/{handle}/advance (toStep=otp_pending, metadata: otpCode,otpExpiresAt)
-    OO-->>C: { step: otp_pending }
-
-    C->>OO: POST /onboarding/otp (Bearer sessionToken, X-Request-Id, otpCode)
-    OO->>SS: POST /sessions/{handle}/verify-otp (otpCode)
-    SS-->>OO: { valid: true }
+    C->>OO: POST /onboarding/face (Bearer sessionToken, X-Request-Id)
     OO->>SS: PUT /sessions/{handle}/advance (toStep=password_pending)
     OO-->>C: { step: password_pending }
 
@@ -113,11 +112,16 @@ sequenceDiagram
 ### 2. Risk Engine (incluye Anti-Bot)
 - `POST /anti-bot/verify`: valida el `captchaToken` contra hCaptcha real
   (`POST https://api.hcaptcha.com/siteverify`, form-urlencoded), devuelve
-  `success`/`score`/`score_reason`/`hostname` como `AntiBotMetadata` — usados por
-  la evaluación de riesgo para tomar la decisión final.
-- `POST /risk/evaluate`: combina fingerprint, canal, IP y `antiBotMetadata` recibido
-  del paso anterior para producir `allow` | `challenge` | `deny`.
+  `success`/`score`/`score_reason`/`hostname`/`challenge_ts`/`pass` como
+  `AntiBotMetadata` (preparado para Enterprise/Pro: `botScore`, `botScoreReason`,
+  `rawBotScore`, `scoreLevel`, `pass`) — usados por la evaluación de riesgo.
+- `POST /risk/evaluate`: combina reputación IP, velocity por `clientIp` (ventana 5 min),
+  historial del `fingerprint` (`fingerprintKnown`/`newDevice`/`travelAnomaly`/
+  `userAgentConsistent`) y `deviceMetadata` nativo (Play Integrity / DeviceCheck) junto
+  con la `antiBotMetadata` completa, para producir `allow` | `challenge` | `deny`.
+  El `fingerprint` sí puntúa (devuelto en `signals` del contrato).
 - El módulo anti-bot vive dentro de este mismo servicio (no se separó en otro repo).
+- Contrato OpenAPI: `risk/api/swagger/openapi.yaml`.
 
 ### 3. Token Service
 - `POST /tokens/context`: emite `contextToken` (aud=`preauth-api`,
@@ -137,33 +141,37 @@ sequenceDiagram
   paso individual tenga TTL propio, ninguna sesión puede vivir más de 900s en total.
 - `POST /sessions`, `GET /sessions/{handle}`, `PUT /sessions/{handle}/advance`,
   `DELETE /sessions/{handle}/invalidate`, `POST /sessions/{handle}/verify-otp`.
-- El DNI, el `userSub` generado y el OTP se almacenan como metadata de la sesión
-  (`SessionMetadata`), nunca expuestos por `GET` (el OTP solo se valida server-side
-  vía `/verify-otp`, que retorna únicamente `{ valid: boolean }`).
-- `linkSub(userSub, sessionHandle)`: además de la clave `flow:{sessionHandle}`,
-  crea `sub:{userSub}` → `sessionHandle` con el mismo TTL, permitiendo que **cualquier
-  servicio con acceso a Redis pueda resolver una sesión directamente por `sub`**, sin
-  pasar por HTTP — este es el mecanismo "versátil" que vincula el DNI del cliente a
-  su sesión activa en todo el flujo (el `userSub` es aleatorio por sesión, no vinculado
-  de forma reversible/determinística al DNI).
+- El DNI, el `userSub` generado y (cuando el proceso externo lo provea) el OTP se almacenan
+  como metadata de la sesión. El OTP nunca se expone en `GET`; su validación la realiza
+  otro proceso vía `POST /verify-otp`, que retorna únicamente `{ valid: boolean }`.
+- `linkSub(userSub, clientInfo)`: además de la clave `flow:{sessionHandle}`,
+  crea `sub:{userSub}` → **proyección del cliente** (`sessionHandle`, `userSub`, `dni`,
+  `fingerprint`) con el mismo TTL. Permite que **cualquier servicio con acceso a Redis
+  obtenga los datos del cliente directamente por `sub`** con UNA sola lectura, sin
+  pasar por HTTP ni conocer `flow:{sessionHandle}`. Este es el mecanismo "versátil" que
+  vincula el DNI del cliente a su sesión activa en todo el flujo (el `userSub` es
+  aleatorio por sesión, no vinculado de forma reversible/determinística al DNI).
 
 ### 5. Onboarding Orchestrator
-- Orquesta las fases posteriores al pre-auth: `start`, `ocr`, `face`, `otp` (los únicos
+- Orquesta las fases posteriores al pre-auth: `start`, `otp`, `ocr`, `face` (los únicos
   endpoints activos en este repo). `products` y `password` existen en código pero no se
   usan todavía.
 - `POST /onboarding/start`: único paso protegido por `contextToken`. Verifica firma/aud/scope
   contra el JWKS real de Token Service, consume el `jti` contra Redis (anti-replay single-use),
   valida el DNI, genera `sub = randomUUID()` (aleatorio, no derivado del DNI),
-  avanza la sesión a `ocr_pending` y emite el `sessionToken`.
-- Los 3 pasos restantes activos están protegidos por `sessionToken` **y** un header
+  avanza la sesión a `otp_pending` y emite el `sessionToken`. No genera el OTP (eso lo hace
+  el proceso externo que valida el código).
+- Los pasos restantes activos están protegidos por `sessionToken` **y** un header
   `X-Request-Id` obligatorio y de un solo uso (el `sessionToken` es multi-uso durante 900s,
   por lo que el anti-replay por-paso depende de este header, consumido contra Redis vía
   `SET NX EX`).
 - Cada paso valida: firma/aud/scope/`sub` del token, binding de IP y canal contra lo emitido
   originalmente, y que el paso actual de la sesión coincida con el esperado (`fase3Guard`).
-- El OTP se genera en `/onboarding/face` (transición `face_pending → otp_pending`), no en
-  `/onboarding/start` — porque en el orden vigente `otp_pending` queda después de la
-  biometría facial.
+- El OTP lo genera y valida un **proceso externo** (no este orquestador). El orquestador
+  solo avanza la state machine (`context_issued → otp_pending → ocr_pending → face_pending`
+  → `password_pending`), validando firma/aud/scope/sub del token, binding de IP y canal, y
+  que el paso actual coincida (`fase3Guard`). Los endpoints `/onboarding/otp`, `/ocr` y
+  `/face` reciben únicamente `sessionHandle`.
 - No tiene base de datos propia: usa Redis solo para anti-replay (vía `ReplayStorePort`), y
   delega todo el estado de negocio a `session-service`.
 
@@ -238,8 +246,8 @@ Ambos `session-service` y `onboarding-orchestrator` usan la **misma instancia** 
 redis://default:***@retrocozy-volleyball-trade-50215.db.redis.io:15759
 ```
 
-- `session-service`: estado de la sesión (`flow:{sessionHandle}`) e índice cruzado por
-  `sub` (`sub:{userSub}`).
+- `session-service`: estado de la sesión (`flow:{sessionHandle}`) e índice por
+  `sub` (`sub:{userSub}` → proyección `{sessionHandle, dni, fingerprint, userSub}`).
 - `onboarding-orchestrator`: anti-replay de `jti` del `contextToken` (`ctx:jti:{jti}`,
   TTL 120s) y de `X-Request-Id` por paso (`req:{sessionHandle}:{requestId}`, TTL 30s).
 
@@ -251,6 +259,12 @@ redis://default:***@retrocozy-volleyball-trade-50215.db.redis.io:15759
 - **hCaptcha real**: `risk-engine` llama a `https://api.hcaptcha.com/siteverify` con
   `application/x-www-form-urlencoded` (incompatible con el `HttpClientService` JSON-only
   compartido, por eso tiene su propio `HCaptchaClient` sobre el módulo `https` nativo).
+  La metadata Enterprise/Pro (`score`, `score_reason`, `hostname`, `challenge_ts`,
+  `pass`) alimenta el score. Sin `HCAPTCHA_SECRET` cae en modo `bypass` (penalizado).
+- **fingerprint sí puntúa**: el Risk Engine mantiene historial por `fingerprint` y deriva
+  `fingerprintKnown`, `newDevice`, `travelAnomaly` (mismo fingerprint visto desde otra IP)
+  y `userAgentConsistent`; el velocity se calcula por `clientIp`. La `deviceMetadata`
+  nativa (Play Integrity / DeviceCheck) aporta la señal de integridad de dispositivo.
 - **OTP nunca expuesto por HTTP**: la validación ocurre enteramente dentro de
   `session-service` (`POST /verify-otp` devuelve solo `{ valid: boolean }`).
 - **Anti-replay en dos niveles**: `jti` del `contextToken` (single-use, un solo canje

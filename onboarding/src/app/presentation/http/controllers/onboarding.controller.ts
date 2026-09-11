@@ -56,6 +56,7 @@ export class OnboardingController {
     return this.onboardingUseCase.verifyOtp({
       sessionToken,
       sessionHandle: req.body.sessionHandle,
+      otpCode: req.body.otpCode,
       ctx: this.buildContext(req),
     });
   }
