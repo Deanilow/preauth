@@ -12,6 +12,8 @@ export interface EmitSessionTokenRequest {
   channel: string;
   clientIp: string;
   correlationId: string;
+  /** Flujo al que pertenece la sesión. Define el scope: '{flowType}:steps'. */
+  flowType: string;
 }
 
 /** Claims verificados de un contextToken (aud=preauth-api, scope=preauth:onboarding.start). */

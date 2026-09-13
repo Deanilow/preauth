@@ -16,6 +16,10 @@ export interface VerifyOtpBodyDto {
   otpCode: string;
 }
 
+export interface SendOtpBodyDto {
+  sessionHandle: string;
+}
+
 export interface VerifyFaceBodyDto {
   sessionHandle: string;
 }

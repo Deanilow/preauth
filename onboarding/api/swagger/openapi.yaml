@@ -27,7 +27,7 @@ info:
       scope=preauth:onboarding.start). El `jti` del contextToken se consume una única vez contra Redis
       (anti-replay). El `sessionHandle` debe enviarse en el body (el contextToken no lo incluye).
     - Los pasos restantes: requieren `Authorization: Bearer <sessionToken>` (aud=onboarding-service,
-      scope=onboarding:steps, sub=`session:{sessionHandle}`) **y** un header `X-Request-Id` único
+      scope=`{flowType}:steps` — ej. `onboarding:steps`, sub=`session:{sessionHandle}`) **y** un header `X-Request-Id` único
       por intento (anti-replay por request, no solo por token — el sessionToken es multi-uso
       durante los 900s de vida de la sesión).
     - Todas las verificaciones de JWT son contra el JWKS remoto de Token Service (RS256), nunca
@@ -236,7 +236,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT RS256 emitido por Token Service (aud=onboarding-service, scope=onboarding:steps, TTL 900s, multi-uso).
+      description: JWT RS256 emitido por Token Service (aud=onboarding-service, scope=`{flowType}:steps` — ej. onboarding:steps, TTL 900s, multi-uso).
 
   parameters:
     XRequestId:

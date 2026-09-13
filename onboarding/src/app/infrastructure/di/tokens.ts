@@ -11,6 +11,7 @@ export const DI_TOKENS = {
   TokenServiceClient: 'TokenServiceClient',
   SessionServiceClient: 'SessionServiceClient',
   DeviceEnrollmentClient: 'DeviceEnrollmentClient',
+  MessengerClient: 'MessengerClient',
 
   // Auth / Cache
   JwtVerifierPort: 'JwtVerifierPort',

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { inject, injectable } from 'tsyringe';
 import { DI_TOKENS } from '../../infrastructure/di/tokens';
 
@@ -7,6 +7,7 @@ import { ReplayStorePort } from '../ports/output/replay-store.port';
 import { TokenServiceClient } from '../../infrastructure/clients/token-service.client';
 import { SessionServiceClient } from '../../infrastructure/clients/session-service.client';
 import { DeviceEnrollmentClient } from '../../infrastructure/clients/device-enrollment.client';
+import { MessengerClient } from '../../infrastructure/clients/messenger.client';
 import { ClientConstants } from '../../infrastructure/clients/client.constants';
 import { ContextTokenClaims, SessionTokenClaims } from '../ports/output/contracts/token-service';
 import { SessionStateResponse } from '../ports/output/contracts/session-service';
@@ -16,6 +17,7 @@ import {
   RequestContext,
   StartRequest,
   StartResponse,
+  SendOtpRequest,
   VerifyOtpRequest,
   VerifyFaceRequest,
   VerifyOcrRequest,
@@ -37,22 +39,10 @@ function generateUserSub(): string {
 }
 
 /**
- * Genera un código OTP de 6 dígitos. Se crea en /onboarding/start y se guarda en
- * Redis (metadata de la sesión) para validarlo después en /onboarding/otp.
- */
-function generateOtp(): string {
-  return (randomBytes(3).readUIntBE(0, 3) % 1_000_000).toString().padStart(6, '0');
-}
-
-// Alineado con el TTL del paso `otp_pending` en STEP_TRANSITIONS (session-service).
-const OTP_TTL_SECONDS = 180;
-
-/**
  * Orquesta las fases de onboarding (start -> otp -> ocr -> face), avanzando la
- * state machine que vive en Session Service. La validación real de OTP / OCR /
- * biometría facial la realiza un proceso externo; este orquestador NO genera ni
- * valida esos códigos/tokens: solo garantiza que el paso esperado coincida
- * (fase3Guard) y avanza al siguiente.
+ * state machine que vive en Session Service. La generación/verificación del OTP
+ * se delega al Messenger Service; este orquestador solo valida el paso (fase3Guard)
+ * y avanza. La validación real de OCR/biometría la realiza un proceso externo.
  */
 @injectable()
 export class OnboardingUseCase implements OnboardingInputPort {
@@ -67,6 +57,8 @@ export class OnboardingUseCase implements OnboardingInputPort {
     private readonly sessionServiceClient: SessionServiceClient,
     @inject(DI_TOKENS.DeviceEnrollmentClient)
     private readonly deviceEnrollmentClient: DeviceEnrollmentClient,
+    @inject(DI_TOKENS.MessengerClient)
+    private readonly messengerClient: MessengerClient,
   ) { }
 
   // ─── Fase 2: /onboarding/start ────────────────────────────────────────────
@@ -102,25 +94,33 @@ export class OnboardingUseCase implements OnboardingInputPort {
 
     const userSub = generateUserSub();
 
-    // Genera el OTP acá y lo persiste en Redis (metadata de la sesión) al avanzar a
-    // otp_pending. Se valida después en /onboarding/otp consultando el registro.
-    const otpCode = generateOtp();
-    const otpExpiresAt = new Date(Date.now() + OTP_TTL_SECONDS * 1000).toISOString();
-
+    // start ya NO genera el OTP: el código lo genera/entrega el Messenger Service
+    // (POST /otp/generate) cuando se llame a /onboarding/otp/send.
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'context_issued',
       toStep: 'otp_pending',
-      metadata: { dni: req.dni, userSub, otpCode, otpExpiresAt },
+      metadata: { dni: req.dni, userSub },
     }, req.ctx.correlationId);
 
     logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] start OK -> otp_pending');
 
-    const sessionToken = await this.issueSessionToken(req.sessionHandle, session.channel, req.ctx);
+    const sessionToken = await this.issueSessionToken(req.sessionHandle, session.channel, session.flowType, req.ctx);
 
     return { sessionToken: sessionToken.token, step: updated.step, expiresIn: sessionToken.expiresIn };
   }
 
   // ─── Fase 3: pasos protegidos por sessionToken ────────────────────────────
+
+  async sendOtp(req: SendOtpRequest): Promise<StepAdvancedResponse> {
+    const session = await this.fase3Guard(req.sessionToken, req.sessionHandle, 'otp_pending', req.ctx);
+
+    // Delegar la generación/reenvío del OTP al Messenger Service. Reenviar N veces
+    // sobrescribe el código en Redis (messenger) sin tocar la state machine.
+    const result = await this.messengerClient.generateOtp(req.sessionHandle, req.sessionToken, req.ctx.correlationId);
+
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] otp send -> messenger OK');
+    return { step: session.step };
+  }
 
   async verifyOtp(req: VerifyOtpRequest): Promise<StepAdvancedResponse> {
     await this.fase3Guard(req.sessionToken, req.sessionHandle, 'otp_pending', req.ctx);
@@ -129,8 +129,8 @@ export class OnboardingUseCase implements OnboardingInputPort {
       throw new BusinessError('INVALID_OTP', 'otpCode is required');
     }
 
-    // Valida el OTP contra session-service (compara record.otpCode/otpExpiresAt en Redis).
-    const otp = await this.sessionServiceClient.verifyOtp(req.sessionHandle, req.otpCode, req.ctx.correlationId);
+    // Delegar la verificación del OTP al Messenger Service.
+    const otp = await this.messengerClient.verifyOtp(req.sessionHandle, req.otpCode, req.sessionToken, req.ctx.correlationId);
     if (!otp.valid) {
       throw new BusinessError('INVALID_OTP');
     }
@@ -266,13 +266,14 @@ export class OnboardingUseCase implements OnboardingInputPort {
     }
   }
 
-  private async issueSessionToken(sessionHandle: string, channel: string, ctx: RequestContext) {
+  private async issueSessionToken(sessionHandle: string, channel: string, flowType: string, ctx: RequestContext) {
     try {
       return await this.tokenServiceClient.issueSessionToken({
         sessionHandle,
         channel,
         clientIp: ctx.clientIp,
         correlationId: ctx.correlationId,
+        flowType,
       });
     } catch (err) {
       logger.error({ correlationId: ctx.correlationId, err: (err as Error).message }, '[Onboarding] token-service unreachable issuing sessionToken');

@@ -11,6 +11,7 @@ export interface SessionMetadata {
 
 export interface SessionStateResponse {
   sessionHandle: string;
+  flowType: string;
   step: OnboardingStep;
   channel: string;
   completedSteps: OnboardingStep[];

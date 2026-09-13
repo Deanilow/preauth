@@ -28,6 +28,12 @@ export interface VerifyOtpRequest {
   ctx: RequestContext;
 }
 
+export interface SendOtpRequest {
+  sessionToken: string;
+  sessionHandle: string;
+  ctx: RequestContext;
+}
+
 export interface VerifyFaceRequest {
   sessionToken: string;
   sessionHandle: string;
@@ -61,6 +67,7 @@ export interface StepAdvancedResponse {
 
 export interface OnboardingInputPort {
   start(req: StartRequest): Promise<StartResponse>;
+  sendOtp(req: SendOtpRequest): Promise<StepAdvancedResponse>;
   verifyOtp(req: VerifyOtpRequest): Promise<StepAdvancedResponse>;
   verifyFace(req: VerifyFaceRequest): Promise<StepAdvancedResponse>;
   verifyOcr(req: VerifyOcrRequest): Promise<StepAdvancedResponse>;

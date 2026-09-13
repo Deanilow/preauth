@@ -13,6 +13,8 @@ export interface EmitSessionTokenRequest {
   channel: Channel;
   clientIp: string;
   correlationId: string;
+  /** Flujo al que pertenece la sesión. Define el scope: '{flowType}:steps'. */
+  flowType: string;
 }
 
 export interface EmitTokenResponse {

@@ -5,6 +5,7 @@ import { DI_TOKENS } from '../../app/infrastructure/di/tokens';
 import { errorResponseSchema } from '../../shared/schema/errorResponseSchema';
 import { OnboardingController } from '../../app/presentation/http/controllers/onboarding.controller';
 import { startBodySchema } from '../schemas/onboarding/startBodySchema';
+import { sendOtpBodySchema } from '../schemas/onboarding/sendOtpBodySchema';
 import { verifyOtpBodySchema } from '../schemas/onboarding/verifyOtpBodySchema';
 import { verifyFaceBodySchema } from '../schemas/onboarding/verifyFaceBodySchema';
 import { verifyOcrBodySchema } from '../schemas/onboarding/verifyOcrBodySchema';
@@ -48,7 +49,17 @@ const routerOnboarding: FastifyPluginCallback = (app: FastifyInstance, _options,
 
   app.route({
     method: 'POST',
-    url: '/otp',
+    url: '/otp/send',
+    schema: {
+      body: sendOtpBodySchema,
+      response: { ...commonErrorResponses },
+    },
+    handler: onboardingController.sendOtp.bind(onboardingController),
+  });
+
+  app.route({
+    method: 'POST',
+    url: '/otp/verify',
     schema: {
       body: verifyOtpBodySchema,
       response: { ...commonErrorResponses },

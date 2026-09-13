@@ -33,6 +33,14 @@ export class ClientConstants {
     return Number(this.getEnv('DEVICE_ENROLLMENT_TIMEOUT_MS') || '7000');
   }
 
+  static get messengerBaseUrl(): string {
+    return this.getEnv('MESSENGER_URL') || 'http://localhost:8027';
+  }
+
+  static get messengerTimeoutMs(): number {
+    return Number(this.getEnv('MESSENGER_TIMEOUT_MS') || '5000');
+  }
+
   /** JWKS del Token Service — usado por jose.createRemoteJWKSet para verificar firmas RS256. */
   static get tokenServiceJwksUrl(): string {
     return this.getEnv('TOKEN_SERVICE_JWKS_URL') || `${this.tokenServiceBaseUrl}/jwks`;

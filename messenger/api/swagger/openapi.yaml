@@ -1,0 +1,236 @@
+openapi: 3.0.3
+info:
+  title: Messenger OTP Service
+  version: 1.0.0
+  description: |
+    Genera y verifica el código OTP de la sesión de onboarding. El código se
+    guarda en Redis (`otp:{sessionHandle}`) y el envío al celular es SIMULADO
+    (no hay proveedor SMS real integrado todavía).
+
+    **Seguridad**: ambos endpoints requieren `Authorization: Bearer <sessionToken>`
+    (aud=onboarding-service, scope=onboarding:steps, sub=session:{sessionHandle}).
+    Se valida firma RS256 contra el JWKS de Token Service y que la sesión esté en
+    `otp_pending` (consultando a Session Service).
+
+    **Reenvío**: `POST /otp/generate` puede llamarse varias veces (sobrescribe el
+    código y resetea intentos) mientras la sesión siga en `otp_pending`.
+  contact:
+    name: Arquitectura Surgir
+
+servers:
+  - url: http://messenger:8027
+    description: Internal service (no expuesto al internet)
+
+tags:
+  - name: otp
+    description: Generación y verificación del código OTP
+
+paths:
+
+  /otp/generate:
+    post:
+      summary: Generar (y "enviar") el código OTP
+      description: |
+        Genera un código OTP de 6 dígitos, lo guarda en Redis con TTL 180s y simula
+        el envío al celular. El código NO se devuelve por HTTP. Reenviar sobrescribe
+        el código anterior y resetea los intentos (la sesión sigue en otp_pending).
+      operationId: generateOtp
+      tags: [otp]
+      security:
+        - sessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateOtpRequest'
+            example:
+              sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+      responses:
+        '200':
+          description: Código generado y "enviado" (simulado).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateOtpResponse'
+              example:
+                sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+                expiresIn: 180
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /otp/verify:
+    post:
+      summary: Verificar el código OTP
+      description: |
+        Valida el `otpCode` contra Redis. Máximo 3 intentos fallidos (luego
+        `OTP_MAX_ATTEMPTS` 429). Si es válido, se consume (se elimina) y devuelve
+        `{ valid: true }`.
+      operationId: verifyOtp
+      tags: [otp]
+      security:
+        - sessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyOtpRequest'
+            example:
+              sessionHandle: 7f8a1b2c-3d4e-5f6a-7b8c-9d0e1f2a3b4c
+              otpCode: '482913'
+      responses:
+        '200':
+          description: Resultado de la validación (200 tanto si es válido como si no).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyOtpResponse'
+              example:
+                valid: true
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Gone' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '500': { $ref: '#/components/responses/InternalError' }
+
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      tags: [otp]
+      responses:
+        '200':
+          description: Servicio operativo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  service:
+                    type: string
+                    example: messenger
+
+components:
+  securitySchemes:
+    sessionToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT RS256 emitido por Token Service (aud=onboarding-service, scope=onboarding:steps, TTL 900s).
+
+  schemas:
+    GenerateOtpRequest:
+      type: object
+      required: [sessionHandle]
+      properties:
+        sessionHandle:
+          type: string
+          format: uuid
+
+    GenerateOtpResponse:
+      type: object
+      required: [sessionHandle, expiresIn]
+      properties:
+        sessionHandle:
+          type: string
+          format: uuid
+        expiresIn:
+          type: integer
+          example: 180
+
+    VerifyOtpRequest:
+      type: object
+      required: [sessionHandle, otpCode]
+      properties:
+        sessionHandle:
+          type: string
+          format: uuid
+        otpCode:
+          type: string
+          pattern: '^[0-9]{6}$'
+
+    VerifyOtpResponse:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, level]
+          properties:
+            code:
+              type: string
+              enum:
+                - REQUEST_VALIDATION_ERROR
+                - MISSING_AUTH_TOKEN
+                - INVALID_TOKEN
+                - INVALID_OTP
+                - OTP_EXPIRED
+                - OTP_MAX_ATTEMPTS
+                - STEP_MISMATCH
+                - SESSION_NOT_FOUND
+            message:
+              type: string
+            level:
+              type: string
+              enum: [error, warning, info]
+            description:
+              type: string
+
+  responses:
+    BadRequest:
+      description: Body inválido.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Unauthorized:
+      description: Token ausente, inválido, expirado o de otro flujo.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: La sesión no está en el paso esperado.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: La sesión no existe.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Gone:
+      description: El código OTP expiró.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    UnprocessableEntity:
+      description: Código OTP incorrecto.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    TooManyRequests:
+      description: Se superó el máximo de intentos.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    InternalError:
+      description: Error interno.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }

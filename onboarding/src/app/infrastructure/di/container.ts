@@ -12,6 +12,7 @@ import { RedisReplayStoreService } from '../cache/replay-store.service';
 import { TokenServiceClient } from '../clients/token-service.client';
 import { SessionServiceClient } from '../clients/session-service.client';
 import { DeviceEnrollmentClient } from '../clients/device-enrollment.client';
+import { MessengerClient } from '../clients/messenger.client';
 
 // ─── Use Cases ────────────────────────────────────────────────────────────────
 import { OnboardingUseCase } from '../../application/usecases/onboarding.usecase';
@@ -30,6 +31,7 @@ container.registerSingleton(DI_TOKENS.ReplayStorePort, RedisReplayStoreService);
 container.register(DI_TOKENS.TokenServiceClient, { useClass: TokenServiceClient });
 container.register(DI_TOKENS.SessionServiceClient, { useClass: SessionServiceClient });
 container.register(DI_TOKENS.DeviceEnrollmentClient, { useClass: DeviceEnrollmentClient });
+container.register(DI_TOKENS.MessengerClient, { useClass: MessengerClient });
 
 // Use Cases
 container.register(DI_TOKENS.OnboardingInputPort, { useClass: OnboardingUseCase });

@@ -88,7 +88,7 @@ paths:
         **Claims del token emitido**:
         - `iss`: identificador de este servicio
         - `aud`: `onboarding-service`
-        - `scope`: `onboarding:steps`
+        - `scope`: `{flowType}:steps` (ej. `onboarding:steps`)
         - `sub`: `session:{sessionHandle}` — vincula el token a la sesión
         - `channel`: canal de origen
         - `ipHash`: hash SHA256 de la IP del cliente
@@ -113,6 +113,7 @@ paths:
               channel: web
               clientIp: 181.50.10.25
               correlationId: 550e8400-e29b-41d4-a716-446655440000
+              flowType: onboarding
       responses:
         '200':
           description: sessionToken emitido correctamente
@@ -220,7 +221,7 @@ components:
 
     EmitSessionTokenRequest:
       type: object
-      required: [sessionHandle, channel, clientIp, correlationId]
+      required: [sessionHandle, channel, clientIp, correlationId, flowType]
       properties:
         sessionHandle:
           type: string
@@ -235,6 +236,9 @@ components:
         correlationId:
           type: string
           format: uuid
+        flowType:
+          type: string
+          description: Flujo al que pertenece la sesión. Define el scope del token: '{flowType}:steps'.
 
     EmitTokenResponse:
       type: object

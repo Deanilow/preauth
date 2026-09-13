@@ -7,6 +7,7 @@ import {
   StartBodyDto,
   StartResponseDto,
   VerifyOtpBodyDto,
+  SendOtpBodyDto,
   VerifyFaceBodyDto,
   VerifyOcrBodyDto,
   SelectProductsBodyDto,
@@ -47,6 +48,15 @@ export class OnboardingController {
       contextToken,
       sessionHandle: req.body.sessionHandle,
       dni: req.body.dni,
+      ctx: this.buildContext(req),
+    });
+  }
+
+  async sendOtp(req: FastifyRequest<{ Body: SendOtpBodyDto }>): Promise<StepAdvancedResponseDto> {
+    const sessionToken = extractBearerToken(req.headers.authorization);
+    return this.onboardingUseCase.sendOtp({
+      sessionToken,
+      sessionHandle: req.body.sessionHandle,
       ctx: this.buildContext(req),
     });
   }

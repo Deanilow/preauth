@@ -17,7 +17,6 @@ const ISSUER = 'token-service';
 const CONTEXT_TOKEN_AUDIENCE = 'preauth-api';
 const SESSION_TOKEN_AUDIENCE = 'onboarding-service';
 const CONTEXT_TOKEN_SCOPE = 'preauth:onboarding.start';
-const SESSION_TOKEN_SCOPE = 'onboarding:steps';
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 
@@ -51,10 +50,12 @@ export class TokenUseCase implements TokenInputPort {
   async emitSessionToken(req: EmitSessionTokenRequest): Promise<EmitTokenResponse> {
     const jti = randomUUID();
 
+    const scope = `${req.flowType}:steps`;
+
     const payload = {
       iss: ISSUER,
       aud: SESSION_TOKEN_AUDIENCE,
-      scope: SESSION_TOKEN_SCOPE,
+      scope,
       sub: `session:${req.sessionHandle}`,
       channel: req.channel,
       ipHash: sha256(req.clientIp),
@@ -63,7 +64,7 @@ export class TokenUseCase implements TokenInputPort {
 
     const token = await this.sign(payload, SESSION_TOKEN_TTL_SECONDS);
 
-    logger.info({ correlationId: req.correlationId, jti, sessionHandle: req.sessionHandle }, '[Token] sessionToken emitted');
+    logger.info({ correlationId: req.correlationId, jti, sessionHandle: req.sessionHandle, scope }, '[Token] sessionToken emitted');
 
     return { token, jti, expiresIn: SESSION_TOKEN_TTL_SECONDS };
   }

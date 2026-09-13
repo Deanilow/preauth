@@ -44,13 +44,14 @@ TTL: 900 segundos (15 minutos), multi-use (anti-replay por X-Request-Id).
   security: [{ bearerAuth: [] }],
   body: {
     type: 'object',
-    required: ['sessionHandle', 'channel', 'clientIp', 'correlationId'],
+    required: ['sessionHandle', 'channel', 'clientIp', 'correlationId', 'flowType'],
     additionalProperties: false,
     properties: {
       sessionHandle: { type: 'string', format: 'uuid' },
       channel: { type: 'string', enum: ['web', 'app'] },
       clientIp: { type: 'string', format: 'ipv4' },
       correlationId: { type: 'string', format: 'uuid' },
+      flowType: { type: 'string' },
     },
   },
   response: {

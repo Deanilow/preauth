@@ -16,6 +16,7 @@ interface EmitSessionTokenBody {
   channel: Channel;
   clientIp: string;
   correlationId: string;
+  flowType: string;
 }
 
 @injectable()
