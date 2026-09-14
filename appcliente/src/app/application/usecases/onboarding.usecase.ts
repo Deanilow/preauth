@@ -69,7 +69,7 @@ export class OnboardingUseCase implements OnboardingInputPort {
       ClientConstants.expectedContextTokenAud,
     );
 
-    if (claims.scope !== 'preauth:onboarding.start') {
+    if (claims.scope !== 'preauth:start') {
       throw new BusinessError('INVALID_TOKEN', `unexpected scope='${claims.scope}'`);
     }
     if (!claims.jti) {
@@ -206,9 +206,6 @@ export class OnboardingUseCase implements OnboardingInputPort {
       ClientConstants.expectedSessionTokenAud,
     );
 
-    if (claims.scope !== 'onboarding:steps') {
-      throw new BusinessError('INVALID_TOKEN', `unexpected scope='${claims.scope}'`);
-    }
     if (claims.sub !== `session:${sessionHandle}`) {
       throw new BusinessError('INVALID_TOKEN', 'sessionToken does not match sessionHandle');
     }
@@ -226,6 +223,15 @@ export class OnboardingUseCase implements OnboardingInputPort {
 
     const session = await this.sessionServiceClient.getSession(sessionHandle, ctx.correlationId);
     this.assertChannelMatches(claims.channel, session.channel);
+
+    // Scope dinámico según el flujo de la sesión: '{flowType}:steps'
+    // (ej. appclient:steps, onboarding:steps). Permite reutilizar este mismo
+    // orquestador para distintos flujos de canal sin hardcodear el scope.
+    const expectedScope = `${session.flowType}:steps`;
+    if (claims.scope !== expectedScope) {
+      throw new BusinessError('INVALID_TOKEN', `unexpected scope='${claims.scope}', expected='${expectedScope}'`);
+    }
+
     this.assertStep(session, expectedStep);
 
     return session;

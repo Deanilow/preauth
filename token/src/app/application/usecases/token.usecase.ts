@@ -16,7 +16,7 @@ const SESSION_TOKEN_TTL_SECONDS = 900;
 const ISSUER = 'token-service';
 const CONTEXT_TOKEN_AUDIENCE = 'preauth-api';
 const SESSION_TOKEN_AUDIENCE = 'onboarding-service';
-const CONTEXT_TOKEN_SCOPE = 'preauth:onboarding.start';
+const CONTEXT_TOKEN_SCOPE = 'preauth:start';
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 

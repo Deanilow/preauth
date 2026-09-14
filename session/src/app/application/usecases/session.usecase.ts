@@ -37,7 +37,8 @@ interface FlowDefinition {
  * lógica de `advanceStep` ni el resto del servicio).
  */
 const FLOW_DEFINITIONS: Record<FlowType, FlowDefinition> = {
-  onboarding: {
+  // Flujo principal: alta de cliente (app). Es el que consume el orquestador.
+  appclient: {
     initialStep: 'context_issued',
     initialTtlSeconds: 120,
     absoluteTtlSeconds: 900,
@@ -50,9 +51,9 @@ const FLOW_DEFINITIONS: Record<FlowType, FlowDefinition> = {
       enroll_device_pending: { next: 'completed', ttlSeconds: 60 },
     },
   },
-  // Flujo de ejemplo: appclient (menos pasos). Se puede redefinir con más/menos
+  // Flujo de ejemplo: onboarding (menos pasos). Se puede redefinir con más/menos
   // pasos según el caso de negocio.
-  appclient: {
+  onboarding: {
     initialStep: 'started',
     initialTtlSeconds: 120,
     absoluteTtlSeconds: 600,

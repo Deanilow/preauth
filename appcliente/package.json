@@ -1,7 +1,7 @@
 {
-  "name": "sur-auth-ms-onboarding-onboarding-orchestrator",
+  "name": "sur-auth-ms-appcliente-orchestrator",
   "version": "1.0.0",
-  "description": "Onboarding Orchestrator microservice",
+  "description": "App Cliente Orchestrator microservice",
   "main": "./dist/server/index.js",
   "author": "",
   "system": "darwin-generator-nodejs-system",
