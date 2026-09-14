@@ -1,4 +1,3 @@
-import { randomBytes } from 'crypto';
 import { inject, injectable } from 'tsyringe';
 import { DI_TOKENS } from '../../infrastructure/di/tokens';
 import {
@@ -9,36 +8,27 @@ import {
   VerifyOtpResponse,
 } from '../ports/input/otp.input';
 import { JwtVerifierPort } from '../ports/output/jwt-verifier.port';
-import { OtpStorePort } from '../ports/output/otp-store.port';
-import { SmsSenderPort } from '../ports/output/sms-sender.port';
+import { OtpProviderPort } from '../ports/output/otp-provider.port';
 import { SessionServiceClient } from '../../infrastructure/clients/session-service.client';
 import { ClientConstants } from '../../infrastructure/clients/client.constants';
 import { SessionTokenClaims } from '../ports/output/contracts/token-service';
-import { OTP_MAX_ATTEMPTS } from '../../domain/entities/otp';
 import { logger } from 'app/infrastructure/logger';
 import { BusinessError } from 'src/shared/errors/integration.error';
 
 const OTP_TTL_SECONDS = 180;
-const OTP_LENGTH = 6;
-
-function generateOtpCode(): string {
-  return (randomBytes(3).readUIntBE(0, 3) % 1_000_000).toString().padStart(OTP_LENGTH, '0');
-}
 
 /**
- * Genera y verifica el código OTP de la sesión. El OTP se guarda en Redis
- * (`otp:{sessionHandle}`) y el envío al celular es SIMULADO (no se integra
- * proveedor real todavía).
+ * Caso de uso del servicio de OTP. Este servicio NO genera ni valida el código
+ * real: valida el token/paso y DELEGA la generación/verificación al "otro
+ * servicio" (OtpProviderPort). No persiste nada en Redis.
  */
 @injectable()
 export class OtpUseCase implements OtpInputPort {
   constructor(
     @inject(DI_TOKENS.JwtVerifierPort)
     private readonly jwtVerifier: JwtVerifierPort,
-    @inject(DI_TOKENS.OtpStorePort)
-    private readonly otpStore: OtpStorePort,
-    @inject(DI_TOKENS.SmsSenderPort)
-    private readonly smsSender: SmsSenderPort,
+    @inject(DI_TOKENS.OtpProviderPort)
+    private readonly otpProvider: OtpProviderPort,
     @inject(DI_TOKENS.SessionServiceClient)
     private readonly sessionServiceClient: SessionServiceClient,
   ) { }
@@ -46,21 +36,10 @@ export class OtpUseCase implements OtpInputPort {
   async generate(req: GenerateOtpRequest): Promise<GenerateOtpResponse> {
     await this.assertTokenAndStep(req.sessionToken, req.sessionHandle);
 
-    const code = generateOtpCode();
-    const expiresAt = new Date(Date.now() + OTP_TTL_SECONDS * 1000).toISOString();
+    // Delega la generación (y envío) del OTP al otro servicio.
+    await this.otpProvider.generate(req.sessionHandle);
 
-    // Sobrescribe el OTP anterior (reenvío) y resetea intentos: la sesión sigue en
-    // otp_pending, por lo que reenviar no rompe el flujo.
-    await this.otpStore.save(
-      req.sessionHandle,
-      { sessionHandle: req.sessionHandle, code, expiresAt, attempts: 0 },
-      OTP_TTL_SECONDS,
-    );
-
-    // Envío SIMULADO: solo se registra, no se contacta ningún proveedor.
-    await this.smsSender.send(req.sessionHandle, code);
-
-    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Messenger] otp generated (sms simulated)');
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Messenger] otp generate delegado');
 
     return { sessionHandle: req.sessionHandle, expiresIn: OTP_TTL_SECONDS };
   }
@@ -68,32 +47,14 @@ export class OtpUseCase implements OtpInputPort {
   async verify(req: VerifyOtpRequest): Promise<VerifyOtpResponse> {
     await this.assertTokenAndStep(req.sessionToken, req.sessionHandle);
 
-    const record = await this.otpStore.find(req.sessionHandle);
-    if (!record) {
-      throw new BusinessError('OTP_EXPIRED');
-    }
-
-    if (new Date(record.expiresAt).getTime() <= Date.now()) {
-      throw new BusinessError('OTP_EXPIRED');
-    }
-
-    if (record.attempts >= OTP_MAX_ATTEMPTS) {
-      throw new BusinessError('OTP_MAX_ATTEMPTS');
-    }
-
-    const valid = record.code === req.otpCode;
+    // Delega la verificación del OTP al otro servicio.
+    const valid = await this.otpProvider.verify(req.sessionHandle, req.otpCode);
 
     if (!valid) {
-      record.attempts += 1;
-      const remainingTtl = Math.max(1, Math.floor((new Date(record.expiresAt).getTime() - Date.now()) / 1000));
-      await this.otpStore.save(req.sessionHandle, record, remainingTtl);
       throw new BusinessError('INVALID_OTP');
     }
 
-    // Código correcto: se consume (se elimina para evitar reuso).
-    await this.otpStore.delete(req.sessionHandle);
-
-    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Messenger] otp verified OK');
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Messenger] otp verify OK');
 
     return { valid: true };
   }

@@ -3,17 +3,17 @@ info:
   title: Messenger OTP Service
   version: 1.0.0
   description: |
-    Genera y verifica el código OTP de la sesión de onboarding. El código se
-    guarda en Redis (`otp:{sessionHandle}`) y el envío al celular es SIMULADO
-    (no hay proveedor SMS real integrado todavía).
+    Servicio de OTP: genera y verifica el código delegando a un "otro servicio"
+    externo (actualmente simulado). Este servicio NO persiste el código en Redis
+    ni lo genera internamente.
 
     **Seguridad**: ambos endpoints requieren `Authorization: Bearer <sessionToken>`
-    (aud=onboarding-service, scope=onboarding:steps, sub=session:{sessionHandle}).
+    (aud=onboarding-service, scope=`{flowType}:steps`, sub=session:{sessionHandle}).
     Se valida firma RS256 contra el JWKS de Token Service y que la sesión esté en
     `otp_pending` (consultando a Session Service).
 
-    **Reenvío**: `POST /otp/generate` puede llamarse varias veces (sobrescribe el
-    código y resetea intentos) mientras la sesión siga en `otp_pending`.
+    **Reenvío**: `POST /otp/generate` puede llamarse varias veces mientras la sesión
+    siga en `otp_pending` (el otro servicio se encarga de regenerar el código).
   contact:
     name: Arquitectura Surgir
 
@@ -31,9 +31,8 @@ paths:
     post:
       summary: Generar (y "enviar") el código OTP
       description: |
-        Genera un código OTP de 6 dígitos, lo guarda en Redis con TTL 180s y simula
-        el envío al celular. El código NO se devuelve por HTTP. Reenviar sobrescribe
-        el código anterior y resetea los intentos (la sesión sigue en otp_pending).
+        Delega la generación (y envío) del código OTP al "otro servicio" externo
+        (simulado). El código NO se devuelve por HTTP ni se persiste en este servicio.
       operationId: generateOtp
       tags: [otp]
       security:
@@ -66,9 +65,8 @@ paths:
     post:
       summary: Verificar el código OTP
       description: |
-        Valida el `otpCode` contra Redis. Máximo 3 intentos fallidos (luego
-        `OTP_MAX_ATTEMPTS` 429). Si es válido, se consume (se elimina) y devuelve
-        `{ valid: true }`.
+        Delega la verificación del `otpCode` al "otro servicio" externo (simulado).
+        Devuelve `{ valid: boolean }`.
       operationId: verifyOtp
       tags: [otp]
       security:
@@ -95,9 +93,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409': { $ref: '#/components/responses/Conflict' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '410': { $ref: '#/components/responses/Gone' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
-        '429': { $ref: '#/components/responses/TooManyRequests' }
         '500': { $ref: '#/components/responses/InternalError' }
 
   /health:
@@ -181,8 +177,6 @@ components:
                 - MISSING_AUTH_TOKEN
                 - INVALID_TOKEN
                 - INVALID_OTP
-                - OTP_EXPIRED
-                - OTP_MAX_ATTEMPTS
                 - STEP_MISMATCH
                 - SESSION_NOT_FOUND
             message:
@@ -214,18 +208,8 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }
-    Gone:
-      description: El código OTP expiró.
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/ErrorResponse' }
     UnprocessableEntity:
       description: Código OTP incorrecto.
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/ErrorResponse' }
-    TooManyRequests:
-      description: Se superó el máximo de intentos.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorResponse' }

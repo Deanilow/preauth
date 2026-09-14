@@ -44,8 +44,6 @@ export const BUSINESS_ERROR_CODES = {
 
   // ── OTP ──
   INVALID_OTP: { code: 'MSG-OTP-001', status: 422, message: 'El código OTP ingresado es incorrecto.' },
-  OTP_EXPIRED: { code: 'MSG-OTP-002', status: 410, message: 'El código OTP expiró, solicite uno nuevo.' },
-  OTP_MAX_ATTEMPTS: { code: 'MSG-OTP-003', status: 429, message: 'Se superó el máximo de intentos, solicite un código nuevo.' },
 } as const;
 
 export type BusinessErrorCode = keyof typeof BUSINESS_ERROR_CODES;

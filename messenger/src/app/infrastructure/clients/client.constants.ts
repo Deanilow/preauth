@@ -20,11 +20,6 @@ export class ClientConstants {
     return this.getEnv('SESSION_TOKEN_AUD') || 'onboarding-service';
   }
 
-  /** KEY VAULT: en producción debe venir del Secret Manager, nunca hardcodeada. */
-  static get redisUrl(): string {
-    return this.getEnv('REDIS_URL');
-  }
-
   static get sessionServiceBaseUrl(): string {
     return this.getEnv('SESSION_SERVICE_URL') || 'http://localhost:8024';
   }

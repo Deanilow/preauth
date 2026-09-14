@@ -6,10 +6,9 @@ export const DI_TOKENS = {
   // Clients
   SessionServiceClient: 'SessionServiceClient',
 
-  // Auth / Cache / Sms
+  // Auth / Provider
   JwtVerifierPort: 'JwtVerifierPort',
-  OtpStorePort: 'OtpStorePort',
-  SmsSenderPort: 'SmsSenderPort',
+  OtpProviderPort: 'OtpProviderPort',
 
   // Use Cases
   OtpInputPort: 'OtpInputPort',

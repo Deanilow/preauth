@@ -4,10 +4,9 @@ import { DI_TOKENS } from './tokens';
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 import { HttpClientService } from '../http/http-client.service';
 
-// ─── Auth / Cache / Sms ───────────────────────────────────────────────────────
+// ─── Auth / Provider ──────────────────────────────────────────────────────────
 import { JoseJwtVerifier } from '../auth/jose-jwt-verifier';
-import { RedisOtpStoreService } from '../cache/otp-store.service';
-import { MockSmsSenderService } from '../sms/mock-sms-sender.service';
+import { MockOtpProviderService } from '../sms/mock-otp-provider.service';
 
 // ─── Clients ──────────────────────────────────────────────────────────────────
 import { SessionServiceClient } from '../clients/session-service.client';
@@ -21,10 +20,9 @@ import { OtpController } from '../../presentation/http/controllers/otp.controlle
 // HTTP
 container.registerSingleton(DI_TOKENS.HttpClientService, HttpClientService);
 
-// Auth / Cache / Sms
+// Auth / Provider
 container.registerInstance(DI_TOKENS.JwtVerifierPort, new JoseJwtVerifier());
-container.registerSingleton(DI_TOKENS.OtpStorePort, RedisOtpStoreService);
-container.registerSingleton(DI_TOKENS.SmsSenderPort, MockSmsSenderService);
+container.registerSingleton(DI_TOKENS.OtpProviderPort, MockOtpProviderService);
 
 // Clients
 container.register(DI_TOKENS.SessionServiceClient, { useClass: SessionServiceClient });
