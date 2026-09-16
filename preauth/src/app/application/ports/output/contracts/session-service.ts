@@ -4,8 +4,7 @@ export interface CreateSessionRequest {
   flowType: 'onboarding' | 'appclient' | 'otp_only' | string;
   channel: Channel;
   clientIp: string;
-  fingerprint: string;
-  /** Datos propios del flujo (se persisten en la sesión). */
+  /** Datos propios del flujo (incluye el deviceId: fingerprint / deviceUuid). */
   context?: Record<string, unknown>;
   correlationId: string;
 }

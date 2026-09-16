@@ -9,7 +9,6 @@ interface CreateSessionBody {
   flowType: FlowType;
   channel: Channel;
   clientIp: string;
-  fingerprint: string;
   context?: Record<string, unknown>;
   correlationId: string;
 }

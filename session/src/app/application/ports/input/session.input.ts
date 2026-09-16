@@ -6,8 +6,7 @@ export interface CreateSessionRequest {
   flowType: FlowType;
   channel: Channel;
   clientIp: string;
-  fingerprint: string;
-  /** Datos propios del flujo (se persisten en la sesión). */
+  /** Datos propios del flujo (incluye el deviceId: fingerprint / deviceUuid). */
   context?: Record<string, unknown>;
   correlationId: string;
 }

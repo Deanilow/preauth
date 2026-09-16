@@ -108,13 +108,16 @@ export class SessionUseCase implements SessionInputPort {
     const stepExpiry = new Date(now.getTime() + flow.initialTtlSeconds * 1000);
     const absoluteExpiresAt = new Date(now.getTime() + flow.absoluteTtlSeconds * 1000);
 
+    // El deviceId se deriva del context del flujo (fingerprint o deviceUuid).
+    const fingerprint = String(req.context?.fingerprint ?? req.context?.deviceUuid ?? '');
+
     const record: SessionRecord = {
       sessionHandle,
       flowType: req.flowType,
       step: flow.initialStep,
       channel: req.channel,
       ipHash: sha256Hex(req.clientIp),
-      fingerprint: req.fingerprint,
+      fingerprint,
       correlationId: req.correlationId,
       completedSteps: [],
       createdAt: now.toISOString(),

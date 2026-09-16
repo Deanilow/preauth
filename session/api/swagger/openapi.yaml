@@ -71,9 +71,11 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateSessionRequest"
             example:
+              flowType: appclient
               channel: web
               clientIp: 181.50.10.25
-              fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
+              context:
+                fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
               correlationId: 550e8400-e29b-41d4-a716-446655440000
       responses:
         "201":
@@ -403,7 +405,7 @@ components:
 
     CreateSessionRequest:
       type: object
-      required: [flowType, channel, clientIp, fingerprint, correlationId]
+      required: [flowType, channel, clientIp, correlationId]
       properties:
         flowType:
           type: string
@@ -416,14 +418,10 @@ components:
           type: string
           format: ipv4
           description: Almacenada como hash SHA256, nunca en texto plano
-        fingerprint:
-          type: string
-          minLength: 32
-          maxLength: 128
         context:
           type: object
           additionalProperties: true
-          description: Datos propios del flujo (se persisten en la sesión).
+          description: Datos propios del flujo (incluye el deviceId - fingerprint / deviceUuid - que se persiste en la sesión).
         correlationId:
           type: string
           format: uuid

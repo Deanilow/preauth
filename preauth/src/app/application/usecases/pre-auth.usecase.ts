@@ -129,7 +129,6 @@ export class PreAuthUseCase implements PreAuthInputPort {
         flowType: req.flowType,
         channel: req.channel,
         clientIp: req.clientIp,
-        fingerprint: deviceId,
         context: req.context,
         correlationId: req.correlationId,
       }),

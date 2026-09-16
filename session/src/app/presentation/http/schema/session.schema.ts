@@ -48,13 +48,12 @@ export const createSessionSchema = {
   security: [{ bearerAuth: [] }],
   body: {
     type: 'object',
-    required: ['flowType', 'channel', 'clientIp', 'fingerprint', 'correlationId'],
+    required: ['flowType', 'channel', 'clientIp', 'correlationId'],
     additionalProperties: false,
     properties: {
       flowType: { type: 'string', enum: flowTypeEnum },
       channel: { type: 'string', enum: ['web', 'app'] },
       clientIp: { type: 'string', format: 'ipv4' },
-      fingerprint: { type: 'string', minLength: 32, maxLength: 128 },
       context: { type: 'object', additionalProperties: true },
       correlationId: { type: 'string', format: 'uuid' },
     },
