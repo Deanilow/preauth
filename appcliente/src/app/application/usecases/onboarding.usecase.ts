@@ -86,20 +86,25 @@ export class OnboardingUseCase implements OnboardingInputPort {
     }
 
     this.assertIpBinding(claims.ipHash, req.ctx.clientIp);
-    this.assertDni(req.dni);
 
     const session = await this.sessionServiceClient.getSession(req.sessionHandle, req.ctx.correlationId);
     this.assertChannelMatches(claims.channel, session.channel);
     this.assertStep(session, 'context_issued');
 
+    // El DNI aplica a los flujos con identificación (appclient/onboarding); otp_only no lo usa.
+    if (session.flowType !== 'otp_only') {
+      this.assertDni(req.dni);
+    }
+
     const userSub = generateUserSub();
 
     // start ya NO genera el OTP: el código lo genera/entrega el Messenger Service
     // (POST /otp/generate) cuando se llame a /onboarding/otp/send.
+    const metadata = req.dni ? { dni: req.dni, userSub } : { userSub };
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'context_issued',
       toStep: 'otp_pending',
-      metadata: { dni: req.dni, userSub },
+      metadata,
     }, req.ctx.correlationId);
 
     logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] start OK -> otp_pending');
@@ -123,7 +128,7 @@ export class OnboardingUseCase implements OnboardingInputPort {
   }
 
   async verifyOtp(req: VerifyOtpRequest): Promise<StepAdvancedResponse> {
-    await this.fase3Guard(req.sessionToken, req.sessionHandle, 'otp_pending', req.ctx);
+    const session = await this.fase3Guard(req.sessionToken, req.sessionHandle, 'otp_pending', req.ctx);
 
     if (!req.otpCode) {
       throw new BusinessError('INVALID_OTP', 'otpCode is required');
@@ -135,12 +140,24 @@ export class OnboardingUseCase implements OnboardingInputPort {
       throw new BusinessError('INVALID_OTP');
     }
 
+    // El siguiente paso depende del flujo de la sesión: el mismo orquestador
+    // sirve para distintos flujos de canal.
+    const nextStepByFlow: Record<string, OnboardingStep> = {
+      appclient: 'ocr_pending',
+      onboarding: 'confirmed',
+      otp_only: 'completed',
+    };
+    const toStep = nextStepByFlow[session.flowType];
+    if (!toStep) {
+      throw new BusinessError('INVALID_STEP_SEQUENCE', `unknown flowType '${session.flowType}'`);
+    }
+
     const updated = await this.sessionServiceClient.advanceStep(req.sessionHandle, {
       fromStep: 'otp_pending',
-      toStep: 'ocr_pending',
+      toStep,
     }, req.ctx.correlationId);
 
-    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle }, '[Onboarding] otp OK -> ocr_pending');
+    logger.info({ correlationId: req.ctx.correlationId, sessionHandle: req.sessionHandle, toStep }, '[Onboarding] otp OK');
     return { step: updated.step };
   }
 
@@ -260,8 +277,8 @@ export class OnboardingUseCase implements OnboardingInputPort {
     }
   }
 
-  private assertDni(dni: string): void {
-    if (!/^[0-9]{8}$/.test(dni)) {
+  private assertDni(dni: string | undefined): void {
+    if (!dni || !/^[0-9]{8}$/.test(dni)) {
       throw new BusinessError('INVALID_DNI');
     }
   }

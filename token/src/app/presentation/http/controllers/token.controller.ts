@@ -6,7 +6,6 @@ import { Channel } from '../../../domain/entities/channel';
 
 interface EmitContextTokenBody {
   channel: Channel;
-  fingerprint: string;
   clientIp: string;
   correlationId: string;
 }

@@ -3,9 +3,9 @@ import { RiskDecision } from '../../../application/ports/output/contracts/risk-e
 
 
 export interface ContextInitBodyDto {
+  flowType: string;
   channel: Channel;
-  fingerprint: string;
-  captchaToken: string;
+  context: Record<string, unknown>;
 }
 
 export interface ContextInitResponseDto {

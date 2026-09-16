@@ -10,6 +10,7 @@ interface CreateSessionBody {
   channel: Channel;
   clientIp: string;
   fingerprint: string;
+  context?: Record<string, unknown>;
   correlationId: string;
 }
 

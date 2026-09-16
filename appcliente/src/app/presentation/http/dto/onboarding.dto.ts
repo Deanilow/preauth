@@ -2,7 +2,7 @@ import { OnboardingStep } from '../../../domain/entities/onboarding-step';
 
 export interface StartBodyDto {
   sessionHandle: string;
-  dni: string;
+  dni?: string;
 }
 
 export interface StartResponseDto {

@@ -3,7 +3,6 @@ import { JwksResult } from '../output/digital-token.port';
 
 export interface EmitContextTokenRequest {
   channel: Channel;
-  fingerprint: string;
   clientIp: string;
   correlationId: string;
 }
@@ -13,7 +12,6 @@ export interface EmitSessionTokenRequest {
   channel: Channel;
   clientIp: string;
   correlationId: string;
-  /** Flujo al que pertenece la sesión. Define el scope: '{flowType}:steps'. */
   flowType: string;
 }
 

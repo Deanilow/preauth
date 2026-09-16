@@ -20,9 +20,9 @@ export class PreAuthController {
     const userAgent = (req.headers['user-agent'] as string) ?? 'unknown';
 
     return await this.preAuthUseCase.contextInit({
+      flowType: body.flowType,
       channel: body.channel,
-      fingerprint: body.fingerprint,
-      captchaToken: body.captchaToken,
+      context: body.context,
       clientIp,
       userAgent,
       correlationId,

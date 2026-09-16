@@ -36,7 +36,6 @@ export class TokenUseCase implements TokenInputPort {
       scope: CONTEXT_TOKEN_SCOPE,
       channel: req.channel,
       jti,
-      fp: sha256(req.fingerprint),
       ipHash: sha256(req.clientIp),
     };
 

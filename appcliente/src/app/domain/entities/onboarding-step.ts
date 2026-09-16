@@ -4,4 +4,5 @@ export type OnboardingStep =
   | 'ocr_pending'
   | 'face_pending'
   | 'password_pending'
+  | 'confirmed'
   | 'completed';

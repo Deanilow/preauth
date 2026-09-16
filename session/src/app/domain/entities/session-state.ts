@@ -4,7 +4,7 @@ import { Channel } from './channel';
  * Tipo de flujo. Cada flujo tiene su propia máquina de estados (pasos + TTLs).
  * El `flowType` se define al crear la sesión y NO cambia durante el flujo.
  */
-export type FlowType = 'onboarding' | 'appclient';
+export type FlowType = 'onboarding' | 'appclient' | 'otp_only';
 
 export type OnboardingStep =
   | 'context_issued'
@@ -42,6 +42,8 @@ export interface SessionRecord extends SessionMetadata {
   createdAt: string;
   stepExpiry: string;
   absoluteExpiresAt: string;
+  /** Datos propios del flujo (ej. deviceUuid, fingerprint, captchaToken...). */
+  context?: Record<string, unknown>;
 }
 
 /**

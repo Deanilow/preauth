@@ -19,11 +19,10 @@ TTL: 120 segundos, single-use (el receptor consume el \`jti\` en Redis).
   security: [{ bearerAuth: [] }],
   body: {
     type: 'object',
-    required: ['channel', 'fingerprint', 'clientIp', 'correlationId'],
+    required: ['channel', 'clientIp', 'correlationId'],
     additionalProperties: false,
     properties: {
       channel: { type: 'string', enum: ['web', 'app'] },
-      fingerprint: { type: 'string', minLength: 32, maxLength: 128 },
       clientIp: { type: 'string', format: 'ipv4' },
       correlationId: { type: 'string', format: 'uuid' },
     },

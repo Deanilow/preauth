@@ -51,16 +51,26 @@ const FLOW_DEFINITIONS: Record<FlowType, FlowDefinition> = {
       enroll_device_pending: { next: 'completed', ttlSeconds: 60 },
     },
   },
-  // Flujo de ejemplo: onboarding (menos pasos). Se puede redefinir con más/menos
-  // pasos según el caso de negocio.
+  // Flujo onboarding (ejemplo): context_issued -> otp_pending -> confirmed -> completed.
+  // Mismo orquestador que appclient; sin OCR/face/password.
   onboarding: {
-    initialStep: 'started',
+    initialStep: 'context_issued',
     initialTtlSeconds: 120,
     absoluteTtlSeconds: 600,
     transitions: {
-      started: { next: 'otp_pending', ttlSeconds: 180 },
+      context_issued: { next: 'otp_pending', ttlSeconds: 180 },
       otp_pending: { next: 'confirmed', ttlSeconds: 300 },
       confirmed: { next: 'completed', ttlSeconds: 60 },
+    },
+  },
+  // Flujo solo-OTP: crea sesión, pasa por otp_pending y termina. Sin OCR/face.
+  otp_only: {
+    initialStep: 'context_issued',
+    initialTtlSeconds: 120,
+    absoluteTtlSeconds: 600,
+    transitions: {
+      context_issued: { next: 'otp_pending', ttlSeconds: 180 },
+      otp_pending: { next: 'completed', ttlSeconds: 300 },
     },
   },
 };
@@ -110,6 +120,7 @@ export class SessionUseCase implements SessionInputPort {
       createdAt: now.toISOString(),
       stepExpiry: stepExpiry.toISOString(),
       absoluteExpiresAt: absoluteExpiresAt.toISOString(),
+      context: req.context,
     };
 
     await this.sessionState.save(sessionHandle, record, flow.initialTtlSeconds);

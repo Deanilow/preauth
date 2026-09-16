@@ -11,7 +11,8 @@ export interface RequestContext {
 export interface StartRequest {
   contextToken: string;
   sessionHandle: string;
-  dni: string;
+  /** Requerido para flujos con identificación (appclient/onboarding); opcional en otp_only. */
+  dni?: string;
   ctx: RequestContext;
 }
 

@@ -7,6 +7,8 @@ export interface CreateSessionRequest {
   channel: Channel;
   clientIp: string;
   fingerprint: string;
+  /** Datos propios del flujo (se persisten en la sesión). */
+  context?: Record<string, unknown>;
   correlationId: string;
 }
 

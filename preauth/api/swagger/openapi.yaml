@@ -71,18 +71,28 @@ paths:
             schema:
               $ref: '#/components/schemas/ContextInitRequest'
             examples:
-              web:
-                summary: Request desde canal Web
+              appclient:
+                summary: Flujo appclient (context con fingerprint + captchaToken → anti-bot + risk)
                 value:
-                  channel: web
-                  fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
-                  captchaToken: P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
-              app:
-                summary: Request desde canal App (Android)
-                value:
+                  flowType: appclient
                   channel: app
-                  fingerprint: b7c4d9e1f2a3b5c6d8e0f1a2b4c6d8e0
-                  captchaToken: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+                  context:
+                    fingerprint: b7c4d9e1f2a3b5c6d8e0f1a2b4c6d8e0
+                    captchaToken: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+              otp_only:
+                summary: Flujo otp_only (context con deviceUuid, sin anti-bot/risk)
+                value:
+                  flowType: otp_only
+                  channel: app
+                  context:
+                    deviceUuid: 3f2504e0-4f89-11d3-9a0c-0305e82c3301
+              onboarding:
+                summary: Flujo onboarding (context con captchaToken, sin fingerprint)
+                value:
+                  flowType: onboarding
+                  channel: web
+                  context:
+                    captchaToken: P1_eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...
       responses:
         '200':
           description: Pre-auth completado. contextToken y sessionHandle listos para usar.
@@ -192,29 +202,36 @@ components:
 
     ContextInitRequest:
       type: object
-      required: [channel, fingerprint, captchaToken]
+      required: [flowType, channel, context]
+      description: |
+        Request genérico de context-init.
+        - `flowType` + `channel`: campos comunes.
+        - `context`: datos propios del flujo (se validan y persisten según el flujo).
+
+        Campos requeridos en `context` por flujo:
+        - `appclient`: `fingerprint` + `captchaToken` (anti-bot + risk).
+        - `onboarding`: `captchaToken` (anti-bot).
+        - `otp_only`: `deviceUuid` (sin anti-bot/risk).
       properties:
+        flowType:
+          type: string
+          enum: [appclient, onboarding, otp_only]
+          description: Flujo al que pertenece la sesión.
         channel:
           type: string
           enum: [web, app]
           description: Canal de origen del request
-        fingerprint:
-          type: string
-          minLength: 32
-          maxLength: 128
+        context:
+          type: object
+          additionalProperties: true
           description: |
-            Hash SHA256 del fingerprint del dispositivo.
-            Generado en el cliente (JavaScript en Web, SDK en App).
-            El servidor lo usa para detección de riesgo y binding de sesión.
-            NUNCA enviar el fingerprint sin hashear (privacy).
-        captchaToken:
-          type: string
-          minLength: 10
-          description: |
-            Token de hCaptcha (canal web) o Play Integrity / DeviceCheck (canal app).
-            Generado en el cliente resolviendo el challenge.
-            El servidor valida este token contra el proveedor server-side.
-            NUNCA confiar en la respuesta del cliente directamente.
+            Datos propios del flujo. Ejemplos:
+            - appclient: `{ fingerprint, captchaToken }`
+            - onboarding: `{ captchaToken }`
+            - otp_only: `{ deviceUuid }`
+          example:
+            fingerprint: b7c4d9e1f2a3b5c6d8e0f1a2b4c6d8e0
+            captchaToken: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
 
     ContextInitResponse:
       type: object

@@ -2,7 +2,6 @@ import { Channel } from "app/domain/entities/channel";
 
 export interface ContextTokenRequest {
   channel: Channel;
-  fingerprint: string;
   clientIp: string;
   correlationId: string;
 }

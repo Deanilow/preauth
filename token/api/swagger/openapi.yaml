@@ -35,11 +35,10 @@ paths:
 
         **Claims del token emitido**:
         - `iss`: identificador de este servicio
-        - `aud`: `preauth-api` (solo válido para el Onboarding Orchestrator)
-        - `scope`: `preauth:onboarding.start`
+        - `aud`: `preauth-api`
+        - `scope`: `preauth:start`
         - `channel`: canal de origen (`web` | `app`)
         - `jti`: UUID único — el receptor lo registra en Redis para anti-replay single-use
-        - `fp`: hash SHA256 del fingerprint del dispositivo
         - `ipHash`: hash SHA256 de la IP del cliente
         - `exp`: now + 120 segundos
         - `iat`: now
@@ -57,7 +56,6 @@ paths:
               $ref: '#/components/schemas/EmitContextTokenRequest'
             example:
               channel: web
-              fingerprint: a3f5b8e2d1c9f047b3a1e8d2c5f0b7a4
               clientIp: 181.50.10.25
               correlationId: 550e8400-e29b-41d4-a716-446655440000
       responses:
@@ -199,17 +197,12 @@ components:
 
     EmitContextTokenRequest:
       type: object
-      required: [channel, fingerprint, clientIp, correlationId]
+      required: [channel, clientIp, correlationId]
       properties:
         channel:
           type: string
           enum: [web, app]
           description: Canal de origen del request
-        fingerprint:
-          type: string
-          minLength: 32
-          maxLength: 128
-          description: Hash SHA256 del fingerprint del dispositivo generado en el cliente
         clientIp:
           type: string
           format: ipv4

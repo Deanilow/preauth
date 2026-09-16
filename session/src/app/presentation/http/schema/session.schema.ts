@@ -1,6 +1,6 @@
 import { commonErrorResponses } from 'src/shared/schema/errorResponseSchema';
 
-const flowTypeEnum = ['onboarding', 'appclient'];
+const flowTypeEnum = ['onboarding', 'appclient', 'otp_only'];
 
 // Pasos genéricos: cada flujo define sus propios pasos. Acá se acepta cualquier string
 // (la validación estricta de transición la hace la máquina de estados en el usecase).
@@ -43,7 +43,7 @@ const sessionClientInfoResponse = {
 
 export const createSessionSchema = {
   summary: 'Crear sesión de onboarding',
-  description: 'Crea una nueva sesión en Redis con estado inicial y TTL según el `flowType` (onboarding | appclient).',
+  description: 'Crea una nueva sesión en Redis con estado inicial y TTL según el `flowType` (appclient | onboarding | otp_only).',
   tags: ['sessions'],
   security: [{ bearerAuth: [] }],
   body: {
@@ -55,6 +55,7 @@ export const createSessionSchema = {
       channel: { type: 'string', enum: ['web', 'app'] },
       clientIp: { type: 'string', format: 'ipv4' },
       fingerprint: { type: 'string', minLength: 32, maxLength: 128 },
+      context: { type: 'object', additionalProperties: true },
       correlationId: { type: 'string', format: 'uuid' },
     },
   },

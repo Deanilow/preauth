@@ -403,8 +403,12 @@ components:
 
     CreateSessionRequest:
       type: object
-      required: [channel, clientIp, fingerprint, correlationId]
+      required: [flowType, channel, clientIp, fingerprint, correlationId]
       properties:
+        flowType:
+          type: string
+          enum: [appclient, onboarding, otp_only]
+          description: Flujo al que pertenece la sesión.
         channel:
           type: string
           enum: [web, app]
@@ -416,6 +420,10 @@ components:
           type: string
           minLength: 32
           maxLength: 128
+        context:
+          type: object
+          additionalProperties: true
+          description: Datos propios del flujo (se persisten en la sesión).
         correlationId:
           type: string
           format: uuid
